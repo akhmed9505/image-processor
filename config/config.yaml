@@ -1,0 +1,15 @@
+postgres:
+  host: "postgres"
+  name: "image-processor"
+  user: "user"
+  port: 5432
+http_server:
+  address: ":8080"
+  timeout: 4
+  idle_timeout: 60 
+minio:
+  host: "minio"
+  port: ":9000"
+kafka:
+  host: "kafka"
+  port: ":9092"

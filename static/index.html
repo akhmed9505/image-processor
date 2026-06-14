@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Image Processor</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <div class="container">
+        <h1>Image Processor</h1>
+
+        <div class="upload-section">
+            <div class="file-upload">
+                <label for="imageFile" class="file-label">
+                    <span class="file-button">Выберите изображение</span>
+                    <span class="file-text" id="fileText">Файл не выбран</span>
+                </label>
+                <input type="file" id="imageFile" name="image" accept="image/*" required>
+            </div>
+
+            <div class="image-preview" id="imagePreview" style="display: none;">
+                <img id="previewImg" src="" alt="Preview">
+            </div>
+        </div>
+
+        <div class="form-section">
+            <div class="form-group">
+                <label for="taskSelect">Тип обработки:</label>
+                <select id="taskSelect" name="task" required>
+                    <option value="">Выберите тип обработки</option>
+                    <option value="resize">Изменить размер</option>
+                    <option value="watermark">Добавить водяной знак</option>
+                    <option value="miniature generating">Создать миниатюру</option>
+                </select>
+            </div>
+
+            <div class="form-group" id="watermarkGroup" style="display: none;">
+                <label for="watermarkText">Текст водяного знака:</label>
+                <input type="text" id="watermarkText" name="watermarkText" placeholder="Введите текст водяного знака">
+            </div>
+
+            <div class="form-group" id="resizeGroup" style="display: none;">
+                <div class="resize-inputs">
+                    <div class="input-group">
+                        <label for="width">Ширина (px):</label>
+                        <input type="number" id="width" name="width" min="1" max="5000" placeholder="Ширина">
+                    </div>
+                    <div class="input-group">
+                        <label for="height">Высота (px):</label>
+                        <input type="number" id="height" name="height" min="1" max="5000" placeholder="Высота">
+                    </div>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label for="contentType">Тип изображения:</label>
+                <select id="contentType" name="contentType" required>
+                    <option value="">Выберите тип</option>
+                    <option value="image/jpeg">JPEG</option>
+                    <option value="image/png">PNG</option>
+                    <option value="image/gif">GIF</option>
+                </select>
+            </div>
+
+            <button type="button" id="submitBtn" class="submit-btn" disabled>
+                Отправить на обработку
+            </button>
+        </div>
+
+        <div class="result-section" id="resultSection" style="display: none;">
+            <h3>Результат:</h3>
+            <div id="resultContent"></div>
+        </div>
+
+        <div class="image-management-section">
+            <h3>Управление изображениями</h3>
+            <div class="id-input-group">
+                <label for="imageId">ID изображения:</label>
+                <input type="text" id="imageId" placeholder="Введите ID изображения" title="ID изображения">
+            </div>
+
+            <div class="action-buttons">
+                <button type="button" id="getImageBtn" class="action-btn get-btn">
+                    Получить изображение
+                </button>
+                <button type="button" id="deleteImageBtn" class="action-btn delete-btn">
+                    Удалить изображение
+                </button>
+            </div>
+
+            <div class="fetched-image-section" id="fetchedImageSection" style="display: none;">
+                <h4>Полученное изображение:</h4>
+                <div id="fetchedImageContainer"></div>
+            </div>
+        </div>
+
+        <div class="loading" id="loading" style="display: none;">
+            <div class="spinner"></div>
+            <p>Обработка изображения...</p>
+        </div>
+    </div>
+
+    <script src="/static/script.js"></script>
+</body>
+</html>
