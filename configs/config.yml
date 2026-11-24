@@ -1,3 +1,9 @@
 log:
   level: info
   format: json
+postgres:
+  host: localhost
+  port: 55433
+  database: imageprocessor
+  max_conns: 10
+  timeout: 5s

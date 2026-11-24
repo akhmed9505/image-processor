@@ -8,14 +8,16 @@ import (
 	"testing"
 )
 
-func clearLogENV(t *testing.T) {
+func setupConfigENV(t *testing.T) {
 	t.Helper()
-	for _, name := range []string{"LOG_LEVEL", "LOG_FORMAT"} {
+	for _, name := range []string{"LOG_LEVEL", "LOG_FORMAT", "POSTGRES_HOST", "POSTGRES_PORT", "POSTGRES_DB", "POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_MAX_CONNS", "POSTGRES_TIMEOUT"} {
 		t.Setenv(name, "")
 		if err := os.Unsetenv(name); err != nil {
 			t.Fatal(err)
 		}
 	}
+	t.Setenv("POSTGRES_USER", "test-user")
+	t.Setenv("POSTGRES_PASSWORD", "test-password")
 }
 
 func writeYAML(t *testing.T, text string) string {
@@ -26,6 +28,8 @@ func writeYAML(t *testing.T, text string) string {
 	}
 	return path
 }
+
+const postgresYAML = "\npostgres: {host: localhost, port: 55433, database: imageprocessor, max_conns: 10, timeout: 5s}\n"
 
 func TestLoad(t *testing.T) {
 	for _, tc := range []struct {
@@ -38,11 +42,11 @@ func TestLoad(t *testing.T) {
 		{"partial ENV", "log: {level: error, format: json}", map[string]string{"LOG_FORMAT": "text"}, Log{Level: "error", Format: "text"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			clearLogENV(t)
+			setupConfigENV(t)
 			for name, value := range tc.overrides {
 				t.Setenv(name, value)
 			}
-			cfg, err := Load(writeYAML(t, tc.yaml))
+			cfg, err := Load(writeYAML(t, tc.yaml+postgresYAML))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -73,7 +77,7 @@ func TestLoadErrors(t *testing.T) {
 		{name: "empty ENV format", envName: "LOG_FORMAT", want: "LOG_FORMAT"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			clearLogENV(t)
+			setupConfigENV(t)
 			text := tc.yaml
 			if tc.envName != "" {
 				text = "log: {level: info, format: json}"
@@ -94,5 +98,47 @@ func TestMissingFile(t *testing.T) {
 	_, err := Load(filepath.Join(t.TempDir(), "missing.yml"))
 	if !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected wrapped file error, got %v", err)
+	}
+}
+
+func TestPostgresENV(t *testing.T) {
+	setupConfigENV(t)
+	t.Setenv("POSTGRES_PORT", "55434")
+	t.Setenv("POSTGRES_MAX_CONNS", "3")
+	t.Setenv("POSTGRES_TIMEOUT", "2s")
+	cfg, err := Load(writeYAML(t, "log: {level: info, format: json}"+postgresYAML))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Postgres.Port != 55434 || cfg.Postgres.MaxConns != 3 || cfg.Postgres.Timeout.String() != "2s" || cfg.Postgres.Password != "test-password" {
+		t.Fatal("PostgreSQL ENV overrides not applied")
+	}
+}
+
+func TestInvalidPostgresENV(t *testing.T) {
+	for _, tc := range []struct{ name, value string }{
+		{"POSTGRES_PORT", "65536"}, {"POSTGRES_PORT", "0"}, {"POSTGRES_TIMEOUT", "secret-value"},
+		{"POSTGRES_TIMEOUT", "-1s"}, {"POSTGRES_MAX_CONNS", "0"}, {"POSTGRES_PASSWORD", ""},
+	} {
+		t.Run(tc.name+"/"+tc.value, func(t *testing.T) {
+			setupConfigENV(t)
+			t.Setenv(tc.name, tc.value)
+			_, err := Load(writeYAML(t, "log: {level: info, format: json}"+postgresYAML))
+			if err == nil {
+				t.Fatal("expected invalid configuration")
+			}
+			if strings.Contains(err.Error(), "secret-value") {
+				t.Fatal("error discloses input")
+			}
+		})
+	}
+}
+
+func TestPostgresPasswordInYAML(t *testing.T) {
+	setupConfigENV(t)
+	text := "log: {level: info, format: json}\npostgres: {password: secret-value}"
+	_, err := Load(writeYAML(t, text))
+	if err == nil || strings.Contains(err.Error(), "secret-value") {
+		t.Fatal("YAML password must be rejected safely")
 	}
 }
