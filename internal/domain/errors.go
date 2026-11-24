@@ -2,8 +2,9 @@ package domain
 
 import "errors"
 
-// Domain errors describe invalid operations and image processing states.
+// Domain errors describe missing images, invalid operations, and processing states.
 var (
+	ErrImageNotFound          = errors.New("image not found")
 	ErrInvalidOperation       = errors.New("unsupported image operation")
 	ErrInvalidOperationParams = errors.New("invalid operation parameters")
 	ErrNoJobs                 = errors.New("image has no jobs")
