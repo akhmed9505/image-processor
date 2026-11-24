@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/akhmed9505/image-processor/internal/domain"
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -114,22 +113,7 @@ func (r *UploadRepository) Create(ctx context.Context, image domain.Image) (doma
 		if err != nil {
 			return domain.Image{}, fmt.Errorf("insert upload job: %w", err)
 		}
-		eventID, err := uuid.NewRandom()
-		if err != nil {
-			return domain.Image{}, fmt.Errorf("generate upload event ID: %w", err)
-		}
-		payload, err := json.Marshal(struct {
-			EventID   string `json:"event_id"`
-			EventType string `json:"event_type"`
-			Version   int    `json:"version"`
-			JobID     string `json:"job_id"`
-		}{eventID.String(), "image.processing.requested", 1, job.ID})
-		if err != nil {
-			return domain.Image{}, fmt.Errorf("serialize upload event: %w", err)
-		}
-		_, err = tx.Exec(ctx, `INSERT INTO outbox(id,job_id,event_type,payload,topic,message_key)
-   VALUES ($1,$2,'image.processing.requested',$3,$4,$5)`, eventID.String(), job.ID, payload, r.jobsTopic, job.ID)
-		if err != nil {
+		if err := enqueueJobRequest(ctx, tx, job.ID, r.jobsTopic, nil); err != nil {
 			return domain.Image{}, fmt.Errorf("insert upload outbox event: %w", err)
 		}
 		image.Jobs = append(image.Jobs, job)

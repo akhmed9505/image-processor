@@ -114,15 +114,11 @@ func (r *ImageRepository) read(ctx context.Context, id *string, limit int, curso
 			ids[i] = image.ID
 			positions[image.ID] = i
 		}
-		rows, err := tx.Query(ctx, `SELECT id::text,image_id::text,operation,params,status,attempts,
-   COALESCE(attempt_token::text,''),lease_until,next_retry_at,
-   COALESCE(result_key,''),COALESCE(result_width,0),COALESCE(result_height,0),COALESCE(result_size_bytes,0),
-   COALESCE(last_error_code,''),COALESCE(last_error,''),created_at,updated_at,completed_at
-   FROM jobs WHERE image_id=ANY($1::uuid[]) ORDER BY image_id,created_at,id`, ids)
+		rows, err := tx.Query(ctx, `SELECT `+jobColumns+`   FROM jobs WHERE image_id=ANY($1::uuid[]) ORDER BY image_id,created_at,id`, ids)
 		if err != nil {
 			return ImagePage{}, fmt.Errorf("query image jobs: %w", err)
 		}
-		jobs, err := pgx.CollectRows(rows, scanJob)
+		jobs, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (domain.Job, error) { return scanJob(row) })
 		if err != nil {
 			return ImagePage{}, fmt.Errorf("scan image jobs: %w", err)
 		}
@@ -137,7 +133,13 @@ func (r *ImageRepository) read(ctx context.Context, id *string, limit int, curso
 	return page, nil
 }
 
-func scanJob(row pgx.CollectableRow) (domain.Job, error) {
+const jobColumns = `id::text,image_id::text,operation,params,status,attempts,
+   COALESCE(attempt_token::text,''),lease_until,next_retry_at,
+   COALESCE(result_key,''),COALESCE(result_width,0),COALESCE(result_height,0),COALESCE(result_size_bytes,0),
+   COALESCE(last_error_code,''),COALESCE(last_error,''),created_at,updated_at,completed_at
+`
+
+func scanJob(row pgx.Row) (domain.Job, error) {
 	var job domain.Job
 	var params []byte
 	var lease, retry, completed pgtype.Timestamptz
