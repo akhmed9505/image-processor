@@ -10,7 +10,7 @@ import (
 
 func setupConfigENV(t *testing.T) {
 	t.Helper()
-	for _, name := range []string{"LOG_LEVEL", "LOG_FORMAT", "POSTGRES_HOST", "POSTGRES_PORT", "POSTGRES_DB", "POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_MAX_CONNS", "POSTGRES_TIMEOUT", "MINIO_ENDPOINT", "MINIO_BUCKET", "MINIO_SECURE", "MINIO_ACCESS_KEY", "MINIO_SECRET_KEY", "MINIO_TIMEOUT"} {
+	for _, name := range []string{"LOG_LEVEL", "LOG_FORMAT", "POSTGRES_HOST", "POSTGRES_PORT", "POSTGRES_DB", "POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_MAX_CONNS", "POSTGRES_TIMEOUT", "MINIO_ENDPOINT", "MINIO_BUCKET", "MINIO_SECURE", "MINIO_ACCESS_KEY", "MINIO_SECRET_KEY", "MINIO_TIMEOUT", "KAFKA_BROKERS", "KAFKA_JOBS_TOPIC", "KAFKA_DLQ_TOPIC", "KAFKA_CONSUMER_GROUP", "KAFKA_TIMEOUT"} {
 		t.Setenv(name, "")
 		if err := os.Unsetenv(name); err != nil {
 			t.Fatal(err)
@@ -31,6 +31,8 @@ func writeYAML(t *testing.T, text string) string {
 	return path
 }
 
+const kafkaYAML = "\nkafka: {brokers: [localhost:29092], jobs_topic: image.processing.jobs, dlq_topic: image.processing.dlq, consumer_group: image-processor-workers, timeout: 10s}\n"
+
 const minioYAML = "\nminio: {endpoint: localhost:9000, bucket: images, secure: false, timeout: 5s}\n"
 
 const postgresYAML = "\npostgres: {host: localhost, port: 55433, database: imageprocessor, max_conns: 10, timeout: 5s}\n"
@@ -50,7 +52,7 @@ func TestLoad(t *testing.T) {
 			for name, value := range tc.overrides {
 				t.Setenv(name, value)
 			}
-			cfg, err := Load(writeYAML(t, tc.yaml+postgresYAML+minioYAML))
+			cfg, err := Load(writeYAML(t, tc.yaml+postgresYAML+minioYAML+kafkaYAML))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -110,7 +112,7 @@ func TestPostgresENV(t *testing.T) {
 	t.Setenv("POSTGRES_PORT", "55434")
 	t.Setenv("POSTGRES_MAX_CONNS", "3")
 	t.Setenv("POSTGRES_TIMEOUT", "2s")
-	cfg, err := Load(writeYAML(t, "log: {level: info, format: json}"+postgresYAML+minioYAML))
+	cfg, err := Load(writeYAML(t, "log: {level: info, format: json}"+postgresYAML+minioYAML+kafkaYAML))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +129,7 @@ func TestInvalidPostgresENV(t *testing.T) {
 		t.Run(tc.name+"/"+tc.value, func(t *testing.T) {
 			setupConfigENV(t)
 			t.Setenv(tc.name, tc.value)
-			_, err := Load(writeYAML(t, "log: {level: info, format: json}"+postgresYAML+minioYAML))
+			_, err := Load(writeYAML(t, "log: {level: info, format: json}"+postgresYAML+minioYAML+kafkaYAML))
 			if err == nil {
 				t.Fatal("expected invalid configuration")
 			}
@@ -153,7 +155,7 @@ func TestMinIOENV(t *testing.T) {
 	t.Setenv("MINIO_BUCKET", "test-images")
 	t.Setenv("MINIO_SECURE", "true")
 	t.Setenv("MINIO_TIMEOUT", "2s")
-	c, e := Load(writeYAML(t, "log: {level: info, format: json}"+postgresYAML+minioYAML))
+	c, e := Load(writeYAML(t, "log: {level: info, format: json}"+postgresYAML+minioYAML+kafkaYAML))
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -166,7 +168,7 @@ func TestMinIOInvalidConfig(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			setupConfigENV(t)
 			t.Setenv(tc.name, tc.value)
-			_, e := Load(writeYAML(t, "log: {level: info, format: json}"+postgresYAML+minioYAML))
+			_, e := Load(writeYAML(t, "log: {level: info, format: json}"+postgresYAML+minioYAML+kafkaYAML))
 			if e == nil || strings.Contains(e.Error(), "secret-value") {
 				t.Fatal("unsafe or missing validation error", e)
 			}
@@ -175,5 +177,33 @@ func TestMinIOInvalidConfig(t *testing.T) {
 	setupConfigENV(t)
 	if _, e := Load(writeYAML(t, "log: {level: info, format: json}"+postgresYAML+"\nminio: {secret_key: private-value}")); e == nil || strings.Contains(e.Error(), "private-value") {
 		t.Fatal("YAML secret accepted or exposed")
+	}
+}
+
+func TestKafkaENV(t *testing.T) {
+	setupConfigENV(t)
+	t.Setenv("KAFKA_BROKERS", "localhost:59092,localhost:59093")
+	t.Setenv("KAFKA_JOBS_TOPIC", "test.jobs")
+	t.Setenv("KAFKA_DLQ_TOPIC", "test.dlq")
+	t.Setenv("KAFKA_CONSUMER_GROUP", "test-group")
+	t.Setenv("KAFKA_TIMEOUT", "2s")
+	c, e := Load(writeYAML(t, "log: {level: info, format: json}"+postgresYAML+minioYAML+kafkaYAML))
+	if e != nil {
+		t.Fatal(e)
+	}
+	if len(c.Kafka.Brokers) != 2 || c.Kafka.Brokers[0] != "localhost:59092" || c.Kafka.JobsTopic != "test.jobs" || c.Kafka.DLQTopic != "test.dlq" || c.Kafka.ConsumerGroup != "test-group" || c.Kafka.Timeout.String() != "2s" {
+		t.Fatal("Kafka overrides not applied")
+	}
+}
+func TestKafkaInvalidConfig(t *testing.T) {
+	for _, tc := range []struct{ name, value string }{{"KAFKA_BROKERS", "localhost"}, {"KAFKA_BROKERS", "localhost:0"}, {"KAFKA_BROKERS", "localhost:65536"}, {"KAFKA_JOBS_TOPIC", ".."}, {"KAFKA_DLQ_TOPIC", "image.processing.jobs"}, {"KAFKA_CONSUMER_GROUP", " "}, {"KAFKA_TIMEOUT", "private-value"}, {"KAFKA_TIMEOUT", "0s"}, {"KAFKA_BROKERS", ""}} {
+		t.Run(tc.name+"/"+tc.value, func(t *testing.T) {
+			setupConfigENV(t)
+			t.Setenv(tc.name, tc.value)
+			_, e := Load(writeYAML(t, "log: {level: info, format: json}"+postgresYAML+minioYAML+kafkaYAML))
+			if e == nil || strings.Contains(e.Error(), "private-value") {
+				t.Fatal("missing or unsafe validation", e)
+			}
+		})
 	}
 }

@@ -12,3 +12,9 @@ minio:
   bucket: images
   secure: false
   timeout: 5s
+kafka:
+  brokers: [localhost:29092]
+  jobs_topic: image.processing.jobs
+  dlq_topic: image.processing.dlq
+  consumer_group: image-processor-workers
+  timeout: 10s

@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 
 // Config contains the application settings currently in use.
 type Config struct {
+	Kafka    Kafka    `yaml:"kafka"`
 	MinIO    MinIO    `yaml:"minio"`
 	Log      Log      `yaml:"log"`
 	Postgres Postgres `yaml:"postgres"`
@@ -69,6 +71,45 @@ func (c MinIO) Validate() error {
 	return nil
 }
 
+// Kafka configures local plaintext brokers, topics, and the worker group.
+type Kafka struct {
+	Brokers       []string      `yaml:"brokers" env:"KAFKA_BROKERS"`
+	JobsTopic     string        `yaml:"jobs_topic" env:"KAFKA_JOBS_TOPIC"`
+	DLQTopic      string        `yaml:"dlq_topic" env:"KAFKA_DLQ_TOPIC"`
+	ConsumerGroup string        `yaml:"consumer_group" env:"KAFKA_CONSUMER_GROUP"`
+	Timeout       time.Duration `yaml:"timeout" env:"KAFKA_TIMEOUT"`
+}
+
+// Validate checks broker addresses, topic names, group, and connection timeout.
+func (c Kafka) Validate() error {
+	if len(c.Brokers) == 0 {
+		return errors.New("kafka.brokers is required")
+	}
+	for _, broker := range c.Brokers {
+		host, port, e := net.SplitHostPort(broker)
+		n, pe := strconv.ParseUint(port, 10, 16)
+		if e != nil || host == "" || strings.TrimSpace(host) != host || pe != nil || n == 0 {
+			return errors.New("kafka.brokers must contain host:port addresses")
+		}
+	}
+	valid := regexp.MustCompile(`^[a-zA-Z0-9._-]{1,249}$`)
+	for _, topic := range []string{c.JobsTopic, c.DLQTopic} {
+		if !valid.MatchString(topic) || topic == "." || topic == ".." {
+			return errors.New("kafka topic names are invalid")
+		}
+	}
+	if c.JobsTopic == c.DLQTopic {
+		return errors.New("kafka topics must be distinct")
+	}
+	if strings.TrimSpace(c.ConsumerGroup) == "" {
+		return errors.New("kafka.consumer_group is required")
+	}
+	if c.Timeout < time.Millisecond {
+		return errors.New("kafka.timeout must be at least one millisecond")
+	}
+	return nil
+}
+
 // Load reads one strict YAML document, applies ENV overrides, and validates it.
 // Unset ENV variables preserve YAML values; explicitly empty overrides are invalid.
 func Load(path string) (Config, error) {
@@ -88,7 +129,7 @@ func Load(path string) (Config, error) {
 		return Config{}, errors.New("parse configuration: expected exactly one YAML document")
 	}
 	// env skips empty strings, so reject them rather than silently retaining YAML.
-	for _, name := range []string{"LOG_LEVEL", "LOG_FORMAT", "POSTGRES_HOST", "POSTGRES_PORT", "POSTGRES_DB", "POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_MAX_CONNS", "POSTGRES_TIMEOUT", "MINIO_ENDPOINT", "MINIO_BUCKET", "MINIO_SECURE", "MINIO_ACCESS_KEY", "MINIO_SECRET_KEY", "MINIO_TIMEOUT"} {
+	for _, name := range []string{"LOG_LEVEL", "LOG_FORMAT", "POSTGRES_HOST", "POSTGRES_PORT", "POSTGRES_DB", "POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_MAX_CONNS", "POSTGRES_TIMEOUT", "MINIO_ENDPOINT", "MINIO_BUCKET", "MINIO_SECURE", "MINIO_ACCESS_KEY", "MINIO_SECRET_KEY", "MINIO_TIMEOUT", "KAFKA_BROKERS", "KAFKA_JOBS_TOPIC", "KAFKA_DLQ_TOPIC", "KAFKA_CONSUMER_GROUP", "KAFKA_TIMEOUT"} {
 		if value, set := os.LookupEnv(name); set && value == "" {
 			return Config{}, fmt.Errorf("environment configuration: %s must not be empty", name)
 		}
@@ -126,5 +167,8 @@ func (c Config) Validate() error {
 	if c.Postgres.Timeout <= 0 {
 		return errors.New("postgres.timeout must be positive")
 	}
-	return c.MinIO.Validate()
+	if err := c.MinIO.Validate(); err != nil {
+		return err
+	}
+	return c.Kafka.Validate()
 }
