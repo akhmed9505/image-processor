@@ -11,6 +11,7 @@ require (
 	github.com/twmb/franz-go v1.22.3
 	github.com/twmb/franz-go/pkg/kadm v1.20.0
 	go.yaml.in/yaml/v3 v3.0.6
+	golang.org/x/image v0.48.0
 )
 
 require (
