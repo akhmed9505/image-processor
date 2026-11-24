@@ -12,8 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// ErrDeleteCommitUncertain means deletion may have committed; callers must check
-// current state or repeat Delete rather than assume rollback or perform cleanup.
+// ErrDeleteCommitUncertain requires checking current state or repeating Delete before cleanup.
 var ErrDeleteCommitUncertain = errors.New("delete commit outcome is uncertain")
 
 // DeleteRepository owns transactions for logical image deletion; callers own pool.
@@ -24,10 +23,8 @@ func NewDeleteRepository(pool *pgxpool.Pool) *DeleteRepository {
 	return &DeleteRepository{pool: pool}
 }
 
-// Delete tombstones an image, cancels unfinished jobs, and schedules cleanup.
-// Repeated deletion preserves all existing cleanup state. Missing images return
-// domain.ErrImageNotFound. Object records and write deadlines remain available
-// for future cleanup, including detection of late writes by fenced attempts.
+// Delete tombstones an image and cancels unfinished jobs, preserving object records.
+// Repeated calls preserve cleanup state; missing images return domain.ErrImageNotFound.
 func (r *DeleteRepository) Delete(ctx context.Context, id string) error {
 	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
@@ -54,8 +51,7 @@ func (r *DeleteRepository) Delete(ctx context.Context, id string) error {
 	if err := tx.QueryRow(ctx, "SELECT clock_timestamp()").Scan(&now); err != nil {
 		return fmt.Errorf("read deletion time: %w", err)
 	}
-	// Retained objects have finished writing. Other intents may still have a PUT
-	// in flight even after cancellation; preserve their deadlines and registry rows.
+	// Non-retained intents may have PUTs in flight after cancellation; preserve their deadlines.
 	if _, err := tx.Exec(ctx, `UPDATE images SET deleted_at=$2,cleanup_after=GREATEST($2::timestamptz,
  (SELECT max(write_until) FROM storage_objects WHERE image_id=$1 AND state<>'retained')) WHERE id=$1`, id, now); err != nil {
 		return fmt.Errorf("tombstone image: %w", err)

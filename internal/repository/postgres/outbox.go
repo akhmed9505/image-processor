@@ -13,7 +13,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Outbox repository errors retain database and context causes through wrapping.
 var (
 	ErrInvalidOutboxInput    = errors.New("invalid outbox repository input")
 	ErrOutboxClaimFenced     = errors.New("outbox claim no longer owns a live lease")
@@ -43,10 +42,8 @@ func NewOutboxRepository(pool *pgxpool.Pool, leaseDuration time.Duration) (*Outb
 	return &OutboxRepository{pool: pool, leaseDuration: leaseDuration}, nil
 }
 
-// Claim locks at most limit available events without waiting for other claimers.
-// Expired claims are replaced. Events must only be published after a nil error;
-// an uncertain COMMIT returns no events and leaves any committed claims to expire.
-// The returned batch has no guaranteed order.
+// Claim returns at most limit events in unspecified order, replacing expired claims.
+// Publish only after a nil error; uncertain COMMIT returns no events and claims expire.
 func (r *OutboxRepository) Claim(ctx context.Context, limit int) ([]OutboxEvent, error) {
 	if limit < 1 || limit > math.MaxInt32 {
 		return nil, ErrInvalidOutboxInput
@@ -67,7 +64,7 @@ func (r *OutboxRepository) Claim(ctx context.Context, limit int) ([]OutboxEvent,
 	if err != nil {
 		return nil, fmt.Errorf("read locked outbox IDs: %w", err)
 	}
-	// Recheck eligibility and start leases using current time after all row locks.
+	// Start leases after acquiring all row locks.
 	rows, err = tx.Query(ctx, `UPDATE outbox SET claim_token=gen_random_uuid(),
  lease_until=clock_timestamp()+$2::bigint*interval '1 microsecond',publish_attempts=publish_attempts+1
  WHERE id=ANY($1::uuid[]) AND published_at IS NULL AND available_at<=clock_timestamp()
@@ -121,7 +118,7 @@ func (r *OutboxRepository) finishClaim(ctx context.Context, id, token, errorCode
 		}
 		return fmt.Errorf("lock outbox event: %w", err)
 	}
-	// This is a separate statement so lock waits cannot preserve an expired lease.
+	// Check current time after lock waits.
 	if err := tx.QueryRow(ctx, `SELECT COALESCE(published_at IS NULL AND claim_token=$2 AND lease_until>clock_timestamp(),false)
  FROM outbox WHERE id=$1`, id, parsed.String()).Scan(&live); err != nil {
 		return fmt.Errorf("check outbox claim: %w", err)

@@ -12,7 +12,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Upload errors identify rejected input, expired intents, and uncertain commits.
 var (
 	ErrInvalidUpload         = errors.New("invalid upload")
 	ErrWriteIntentExpired    = errors.New("original write intent expired")
@@ -35,10 +34,8 @@ func NewUploadRepository(pool *pgxpool.Pool, jobsTopic string, redispatchInterva
 	return &UploadRepository{pool: pool, jobsTopic: jobsTopic, redispatchInterval: redispatchInterval}, nil
 }
 
-// Create persists original metadata, pending jobs, and requested events together.
-// It consumes image metadata and each job's ID, operation and parameters. Runtime
-// job fields and creation timestamps are initialized here, not copied from input.
-// On ErrUploadCommitUncertain, check image.ID and its intent before retry/cleanup.
+// Create persists image metadata and job IDs, operations, and params, initializing state and timestamps.
+// On ErrUploadCommitUncertain, check image.ID and its intent before retry or cleanup.
 func (r *UploadRepository) Create(ctx context.Context, image domain.Image) (domain.Image, error) {
 	if len(image.Jobs) == 0 {
 		return domain.Image{}, domain.ErrNoJobs
@@ -90,7 +87,7 @@ func (r *UploadRepository) Create(ctx context.Context, image domain.Image) (doma
 	if state != StorageStateWriting {
 		return domain.Image{}, ErrInvalidStorageTransition
 	}
-	// This statement starts only after FOR UPDATE has acquired the row lock.
+	// Check intent expiry after acquiring the row lock.
 	var valid bool
 	if err := tx.QueryRow(ctx, `SELECT write_until>clock_timestamp() FROM storage_objects WHERE object_key=$1`, image.OriginalKey).Scan(&valid); err != nil {
 		return domain.Image{}, fmt.Errorf("check upload intent deadline: %w", err)
@@ -118,7 +115,7 @@ func (r *UploadRepository) Create(ctx context.Context, image domain.Image) (doma
 		}
 		image.Jobs = append(image.Jobs, job)
 	}
-	// Recheck before retention as database work can itself outlive the intent.
+	// Database writes may outlive the intent.
 	tag, err := tx.Exec(ctx, `UPDATE storage_objects SET state='retained',updated_at=clock_timestamp()
  WHERE object_key=$1 AND state='writing' AND write_until>clock_timestamp()`, image.OriginalKey)
 	if err != nil {

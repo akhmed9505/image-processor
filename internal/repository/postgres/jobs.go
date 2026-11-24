@@ -15,7 +15,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Job repository errors retain database and context causes through wrapping.
 var (
 	ErrJobNotFound        = errors.New("job not found")
 	ErrInvalidJobInput    = errors.New("invalid job repository input")
@@ -130,9 +129,8 @@ func resultObjectKey(job domain.Job, contentType string) string {
 	return fmt.Sprintf("%s/results/%s/%s.%s", job.ImageID, job.ID, job.AttemptToken, ext)
 }
 
-// Claim atomically creates a leased attempt and its result write intent.
-// Expired processing jobs are left to recovery; errors must not be acknowledged.
-// The caller must reserve a worker slot before calling Claim.
+// Claim creates a leased attempt and intent; reserve a worker slot first.
+// Expired attempts require recovery. Errors, including uncertain COMMIT, must not be acknowledged.
 func (r *JobRepository) Claim(ctx context.Context, id string) (ClaimResult, error) {
 	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
@@ -200,8 +198,7 @@ type JobResult struct {
 	SizeBytes     int64
 }
 
-// JobFailure contains an error code and a safe message suitable for persistence.
-// Callers must exclude credentials and sensitive data from Message.
+// JobFailure holds a code and message; callers must exclude secrets from Message.
 type JobFailure struct{ Code, Message string }
 
 // Complete accepts an output only from the current live attempt and its intent.
@@ -310,7 +307,7 @@ func (r *JobRepository) changeAttempt(ctx context.Context, id, token string, cha
 	if _, err := tx.Exec(ctx, "UPDATE storage_objects SET state=$2,updated_at=clock_timestamp() WHERE object_key=$1", key, state); err != nil {
 		return domain.Job{}, fmt.Errorf("finalize result intent: %w", err)
 	}
-	// Roll back all changes if time spent writing the outcome exhausted the old lease.
+	// Database writes may outlive the attempt lease.
 	var live bool
 	if err := tx.QueryRow(ctx, "SELECT clock_timestamp()<$1::timestamptz AND clock_timestamp()<$2::timestamptz", job.LeaseUntil, object.WriteUntil).Scan(&live); err != nil {
 		return domain.Job{}, fmt.Errorf("recheck attempt lease: %w", err)

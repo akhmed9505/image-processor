@@ -20,7 +20,6 @@ const (
 	StorageStateDiscarded StorageState = "discarded"
 )
 
-// Storage registry errors can be checked with errors.Is.
 var (
 	ErrStorageObjectNotFound    = errors.New("storage object not found")
 	ErrStorageObjectExists      = errors.New("storage object already registered")
@@ -28,8 +27,7 @@ var (
 	ErrInvalidWriteIntent       = errors.New("invalid original write intent")
 )
 
-// StorageObject is a registry record, not a domain image or a storage client DTO.
-// JobID and AttemptToken are empty for original write intents.
+// StorageObject is a registry record; original intents have no JobID or AttemptToken.
 type StorageObject struct {
 	ObjectKey    string
 	ImageID      string
@@ -52,9 +50,8 @@ func NewStorageRepository(pool *pgxpool.Pool) *StorageRepository {
 const storageColumns = `object_key,image_id::text,COALESCE(job_id::text,''),COALESCE(attempt_token::text,''),
  state,write_until,created_at,updated_at`
 
-// RegisterOriginal reserves a new key before the image row exists.
-// PostgreSQL computes the deadline. Existing keys are never overwritten or reused.
-// TTL must be at least one microsecond, matching PostgreSQL timestamp precision.
+// RegisterOriginal reserves a non-reusable key before its image exists.
+// PostgreSQL sets the deadline; ttl must be at least one microsecond.
 func (r *StorageRepository) RegisterOriginal(ctx context.Context, key, imageID string, ttl time.Duration) (StorageObject, error) {
 	if key == "" || imageID == "" || ttl < time.Microsecond {
 		return StorageObject{}, ErrInvalidWriteIntent
