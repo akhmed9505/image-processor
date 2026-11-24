@@ -4,7 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -14,6 +17,7 @@ import (
 
 // Config contains the application settings currently in use.
 type Config struct {
+	MinIO    MinIO    `yaml:"minio"`
 	Log      Log      `yaml:"log"`
 	Postgres Postgres `yaml:"postgres"`
 }
@@ -36,6 +40,35 @@ type Postgres struct {
 	Timeout  time.Duration `yaml:"timeout" env:"POSTGRES_TIMEOUT"`
 }
 
+// MinIO configures object storage; credentials are accepted only through ENV.
+type MinIO struct {
+	Endpoint  string        `yaml:"endpoint" env:"MINIO_ENDPOINT"`
+	Bucket    string        `yaml:"bucket" env:"MINIO_BUCKET"`
+	Secure    bool          `yaml:"secure" env:"MINIO_SECURE"`
+	AccessKey string        `yaml:"-" env:"MINIO_ACCESS_KEY"`
+	SecretKey string        `yaml:"-" env:"MINIO_SECRET_KEY"`
+	Timeout   time.Duration `yaml:"timeout" env:"MINIO_TIMEOUT"`
+}
+
+// Validate checks the endpoint, bucket, credentials, and initialization timeout.
+func (c MinIO) Validate() error {
+	u, e := url.Parse("http://" + c.Endpoint)
+	if e != nil || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+		return errors.New("minio.endpoint must be a host with optional port")
+	}
+	valid := regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`)
+	if !valid.MatchString(c.Bucket) || strings.Contains(c.Bucket, "..") || strings.Contains(c.Bucket, ".-") || strings.Contains(c.Bucket, "-.") || net.ParseIP(c.Bucket) != nil {
+		return errors.New("minio.bucket must be a valid S3 bucket name")
+	}
+	if c.AccessKey == "" || c.SecretKey == "" {
+		return errors.New("minio ENV credentials are required")
+	}
+	if c.Timeout <= 0 {
+		return errors.New("minio.timeout must be positive")
+	}
+	return nil
+}
+
 // Load reads one strict YAML document, applies ENV overrides, and validates it.
 // Unset ENV variables preserve YAML values; explicitly empty overrides are invalid.
 func Load(path string) (Config, error) {
@@ -55,7 +88,7 @@ func Load(path string) (Config, error) {
 		return Config{}, errors.New("parse configuration: expected exactly one YAML document")
 	}
 	// env skips empty strings, so reject them rather than silently retaining YAML.
-	for _, name := range []string{"LOG_LEVEL", "LOG_FORMAT", "POSTGRES_HOST", "POSTGRES_PORT", "POSTGRES_DB", "POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_MAX_CONNS", "POSTGRES_TIMEOUT"} {
+	for _, name := range []string{"LOG_LEVEL", "LOG_FORMAT", "POSTGRES_HOST", "POSTGRES_PORT", "POSTGRES_DB", "POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_MAX_CONNS", "POSTGRES_TIMEOUT", "MINIO_ENDPOINT", "MINIO_BUCKET", "MINIO_SECURE", "MINIO_ACCESS_KEY", "MINIO_SECRET_KEY", "MINIO_TIMEOUT"} {
 		if value, set := os.LookupEnv(name); set && value == "" {
 			return Config{}, fmt.Errorf("environment configuration: %s must not be empty", name)
 		}
@@ -69,7 +102,7 @@ func Load(path string) (Config, error) {
 	return cfg, nil
 }
 
-// Validate checks logging settings and required PostgreSQL connection parameters.
+// Validate checks required application settings.
 func (c Config) Validate() error {
 	switch c.Log.Level {
 	case "debug", "info", "warn", "error":
@@ -93,5 +126,5 @@ func (c Config) Validate() error {
 	if c.Postgres.Timeout <= 0 {
 		return errors.New("postgres.timeout must be positive")
 	}
-	return nil
+	return c.MinIO.Validate()
 }

@@ -1,0 +1,4 @@
+# MinIO builds from pinned remote sources and needs no local project files.
+**
+!Dockerfile.minio
+!.dockerignore

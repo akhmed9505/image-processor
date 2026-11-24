@@ -7,3 +7,8 @@ postgres:
   database: imageprocessor
   max_conns: 10
   timeout: 5s
+minio:
+  endpoint: localhost:9000
+  bucket: images
+  secure: false
+  timeout: 5s

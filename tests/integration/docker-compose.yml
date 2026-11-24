@@ -19,3 +19,20 @@ services:
       interval: 2s
       timeout: 3s
       retries: 30
+  minio:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.minio
+    image: imageprocessor-minio:local
+    environment:
+      MINIO_ROOT_USER: ${TEST_MINIO_ACCESS_KEY:-integration-user}
+      MINIO_ROOT_PASSWORD: ${TEST_MINIO_SECRET_KEY:-integration-password}
+    ports:
+      - "127.0.0.1:${TEST_MINIO_PORT:-59000}:9000"
+    tmpfs:
+      - /data:uid=65532,gid=65532,mode=0700
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9000/minio/health/ready"]
+      interval: 2s
+      timeout: 3s
+      retries: 30

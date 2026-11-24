@@ -10,12 +10,14 @@ import (
 
 func setupConfigENV(t *testing.T) {
 	t.Helper()
-	for _, name := range []string{"LOG_LEVEL", "LOG_FORMAT", "POSTGRES_HOST", "POSTGRES_PORT", "POSTGRES_DB", "POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_MAX_CONNS", "POSTGRES_TIMEOUT"} {
+	for _, name := range []string{"LOG_LEVEL", "LOG_FORMAT", "POSTGRES_HOST", "POSTGRES_PORT", "POSTGRES_DB", "POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_MAX_CONNS", "POSTGRES_TIMEOUT", "MINIO_ENDPOINT", "MINIO_BUCKET", "MINIO_SECURE", "MINIO_ACCESS_KEY", "MINIO_SECRET_KEY", "MINIO_TIMEOUT"} {
 		t.Setenv(name, "")
 		if err := os.Unsetenv(name); err != nil {
 			t.Fatal(err)
 		}
 	}
+	t.Setenv("MINIO_ACCESS_KEY", "test-access-key")
+	t.Setenv("MINIO_SECRET_KEY", "test-secret-key")
 	t.Setenv("POSTGRES_USER", "test-user")
 	t.Setenv("POSTGRES_PASSWORD", "test-password")
 }
@@ -28,6 +30,8 @@ func writeYAML(t *testing.T, text string) string {
 	}
 	return path
 }
+
+const minioYAML = "\nminio: {endpoint: localhost:9000, bucket: images, secure: false, timeout: 5s}\n"
 
 const postgresYAML = "\npostgres: {host: localhost, port: 55433, database: imageprocessor, max_conns: 10, timeout: 5s}\n"
 
@@ -46,7 +50,7 @@ func TestLoad(t *testing.T) {
 			for name, value := range tc.overrides {
 				t.Setenv(name, value)
 			}
-			cfg, err := Load(writeYAML(t, tc.yaml+postgresYAML))
+			cfg, err := Load(writeYAML(t, tc.yaml+postgresYAML+minioYAML))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -106,7 +110,7 @@ func TestPostgresENV(t *testing.T) {
 	t.Setenv("POSTGRES_PORT", "55434")
 	t.Setenv("POSTGRES_MAX_CONNS", "3")
 	t.Setenv("POSTGRES_TIMEOUT", "2s")
-	cfg, err := Load(writeYAML(t, "log: {level: info, format: json}"+postgresYAML))
+	cfg, err := Load(writeYAML(t, "log: {level: info, format: json}"+postgresYAML+minioYAML))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +127,7 @@ func TestInvalidPostgresENV(t *testing.T) {
 		t.Run(tc.name+"/"+tc.value, func(t *testing.T) {
 			setupConfigENV(t)
 			t.Setenv(tc.name, tc.value)
-			_, err := Load(writeYAML(t, "log: {level: info, format: json}"+postgresYAML))
+			_, err := Load(writeYAML(t, "log: {level: info, format: json}"+postgresYAML+minioYAML))
 			if err == nil {
 				t.Fatal("expected invalid configuration")
 			}
@@ -140,5 +144,36 @@ func TestPostgresPasswordInYAML(t *testing.T) {
 	_, err := Load(writeYAML(t, text))
 	if err == nil || strings.Contains(err.Error(), "secret-value") {
 		t.Fatal("YAML password must be rejected safely")
+	}
+}
+
+func TestMinIOENV(t *testing.T) {
+	setupConfigENV(t)
+	t.Setenv("MINIO_ENDPOINT", "localhost:59000")
+	t.Setenv("MINIO_BUCKET", "test-images")
+	t.Setenv("MINIO_SECURE", "true")
+	t.Setenv("MINIO_TIMEOUT", "2s")
+	c, e := Load(writeYAML(t, "log: {level: info, format: json}"+postgresYAML+minioYAML))
+	if e != nil {
+		t.Fatal(e)
+	}
+	if c.MinIO.Endpoint != "localhost:59000" || c.MinIO.Bucket != "test-images" || !c.MinIO.Secure || c.MinIO.Timeout.String() != "2s" || c.MinIO.SecretKey != "test-secret-key" {
+		t.Fatal("MinIO ENV not applied")
+	}
+}
+func TestMinIOInvalidConfig(t *testing.T) {
+	for _, tc := range []struct{ name, value string }{{"MINIO_ENDPOINT", "http://secret-value@host"}, {"MINIO_BUCKET", "Invalid_Bucket"}, {"MINIO_SECURE", "secret-value"}, {"MINIO_SECRET_KEY", ""}, {"MINIO_TIMEOUT", "0s"}} {
+		t.Run(tc.name, func(t *testing.T) {
+			setupConfigENV(t)
+			t.Setenv(tc.name, tc.value)
+			_, e := Load(writeYAML(t, "log: {level: info, format: json}"+postgresYAML+minioYAML))
+			if e == nil || strings.Contains(e.Error(), "secret-value") {
+				t.Fatal("unsafe or missing validation error", e)
+			}
+		})
+	}
+	setupConfigENV(t)
+	if _, e := Load(writeYAML(t, "log: {level: info, format: json}"+postgresYAML+"\nminio: {secret_key: private-value}")); e == nil || strings.Contains(e.Error(), "private-value") {
+		t.Fatal("YAML secret accepted or exposed")
 	}
 }
