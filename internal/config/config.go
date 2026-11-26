@@ -18,10 +18,24 @@ import (
 
 // Config contains the application settings currently in use.
 type Config struct {
-	Kafka    Kafka    `yaml:"kafka"`
-	MinIO    MinIO    `yaml:"minio"`
-	Log      Log      `yaml:"log"`
-	Postgres Postgres `yaml:"postgres"`
+	MigrationsDir         string        `yaml:"migrations_dir" env:"MIGRATIONS_DIR"`
+	HTTP                  HTTP          `yaml:"http"`
+	StartupTimeout        time.Duration `yaml:"startup_timeout" env:"STARTUP_TIMEOUT"`
+	ValidationConcurrency int           `yaml:"validation_concurrency" env:"VALIDATION_CONCURRENCY"`
+	Kafka                 Kafka         `yaml:"kafka"`
+	MinIO                 MinIO         `yaml:"minio"`
+	Log                   Log           `yaml:"log"`
+	Postgres              Postgres      `yaml:"postgres"`
+}
+
+// HTTP controls listener, request, and graceful shutdown deadlines.
+type HTTP struct {
+	Address           string        `yaml:"address" env:"HTTP_ADDRESS"`
+	ReadHeaderTimeout time.Duration `yaml:"read_header_timeout" env:"HTTP_READ_HEADER_TIMEOUT"`
+	ReadTimeout       time.Duration `yaml:"read_timeout" env:"HTTP_READ_TIMEOUT"`
+	WriteTimeout      time.Duration `yaml:"write_timeout" env:"HTTP_WRITE_TIMEOUT"`
+	IdleTimeout       time.Duration `yaml:"idle_timeout" env:"HTTP_IDLE_TIMEOUT"`
+	ShutdownTimeout   time.Duration `yaml:"shutdown_timeout" env:"HTTP_SHUTDOWN_TIMEOUT"`
 }
 
 // Log configures the logging threshold and output format.
@@ -118,7 +132,7 @@ func Load(path string) (Config, error) {
 		return Config{}, fmt.Errorf("open configuration: %w", err)
 	}
 	defer f.Close()
-	var cfg Config
+	cfg := Config{MigrationsDir: "migrations", HTTP: HTTP{Address: ":8080", ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 60 * time.Second, WriteTimeout: 120 * time.Second, IdleTimeout: 60 * time.Second, ShutdownTimeout: 30 * time.Second}, StartupTimeout: 30 * time.Second, ValidationConcurrency: 1}
 	decoder := yaml.NewDecoder(f)
 	decoder.KnownFields(true)
 	if err := decoder.Decode(&cfg); err != nil {
@@ -129,7 +143,7 @@ func Load(path string) (Config, error) {
 		return Config{}, errors.New("parse configuration: expected exactly one YAML document")
 	}
 	// env skips empty strings, so reject them rather than silently retaining YAML.
-	for _, name := range []string{"LOG_LEVEL", "LOG_FORMAT", "POSTGRES_HOST", "POSTGRES_PORT", "POSTGRES_DB", "POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_MAX_CONNS", "POSTGRES_TIMEOUT", "MINIO_ENDPOINT", "MINIO_BUCKET", "MINIO_SECURE", "MINIO_ACCESS_KEY", "MINIO_SECRET_KEY", "MINIO_TIMEOUT", "KAFKA_BROKERS", "KAFKA_JOBS_TOPIC", "KAFKA_DLQ_TOPIC", "KAFKA_CONSUMER_GROUP", "KAFKA_TIMEOUT"} {
+	for _, name := range []string{"MIGRATIONS_DIR", "HTTP_ADDRESS", "HTTP_READ_HEADER_TIMEOUT", "HTTP_READ_TIMEOUT", "HTTP_WRITE_TIMEOUT", "HTTP_IDLE_TIMEOUT", "HTTP_SHUTDOWN_TIMEOUT", "STARTUP_TIMEOUT", "VALIDATION_CONCURRENCY", "LOG_LEVEL", "LOG_FORMAT", "POSTGRES_HOST", "POSTGRES_PORT", "POSTGRES_DB", "POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_MAX_CONNS", "POSTGRES_TIMEOUT", "MINIO_ENDPOINT", "MINIO_BUCKET", "MINIO_SECURE", "MINIO_ACCESS_KEY", "MINIO_SECRET_KEY", "MINIO_TIMEOUT", "KAFKA_BROKERS", "KAFKA_JOBS_TOPIC", "KAFKA_DLQ_TOPIC", "KAFKA_CONSUMER_GROUP", "KAFKA_TIMEOUT"} {
 		if value, set := os.LookupEnv(name); set && value == "" {
 			return Config{}, fmt.Errorf("environment configuration: %s must not be empty", name)
 		}
@@ -145,6 +159,21 @@ func Load(path string) (Config, error) {
 
 // Validate checks required application settings.
 func (c Config) Validate() error {
+	if c.MigrationsDir == "" {
+		return errors.New("migrations_dir is required")
+	}
+	_, port, err := net.SplitHostPort(c.HTTP.Address)
+	n, parseErr := strconv.ParseUint(port, 10, 16)
+	if err != nil || parseErr != nil || n == 0 {
+		return errors.New("http.address must contain a valid nonzero port")
+	}
+	if c.HTTP.ReadHeaderTimeout <= 0 || c.HTTP.ReadTimeout <= 0 || c.HTTP.WriteTimeout <= 0 || c.HTTP.IdleTimeout <= 0 || c.HTTP.ShutdownTimeout <= 0 || c.HTTP.ShutdownTimeout > 30*time.Second {
+		return errors.New("HTTP timeouts must be positive; shutdown_timeout must not exceed 30s")
+	}
+	if c.StartupTimeout <= 0 || c.ValidationConcurrency < 1 {
+		return errors.New("startup_timeout and validation_concurrency must be positive")
+	}
+
 	switch c.Log.Level {
 	case "debug", "info", "warn", "error":
 	default:

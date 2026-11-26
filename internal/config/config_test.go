@@ -10,7 +10,7 @@ import (
 
 func setupConfigENV(t *testing.T) {
 	t.Helper()
-	for _, name := range []string{"LOG_LEVEL", "LOG_FORMAT", "POSTGRES_HOST", "POSTGRES_PORT", "POSTGRES_DB", "POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_MAX_CONNS", "POSTGRES_TIMEOUT", "MINIO_ENDPOINT", "MINIO_BUCKET", "MINIO_SECURE", "MINIO_ACCESS_KEY", "MINIO_SECRET_KEY", "MINIO_TIMEOUT", "KAFKA_BROKERS", "KAFKA_JOBS_TOPIC", "KAFKA_DLQ_TOPIC", "KAFKA_CONSUMER_GROUP", "KAFKA_TIMEOUT"} {
+	for _, name := range []string{"MIGRATIONS_DIR", "HTTP_ADDRESS", "HTTP_READ_HEADER_TIMEOUT", "HTTP_READ_TIMEOUT", "HTTP_WRITE_TIMEOUT", "HTTP_IDLE_TIMEOUT", "HTTP_SHUTDOWN_TIMEOUT", "STARTUP_TIMEOUT", "VALIDATION_CONCURRENCY", "LOG_LEVEL", "LOG_FORMAT", "POSTGRES_HOST", "POSTGRES_PORT", "POSTGRES_DB", "POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_MAX_CONNS", "POSTGRES_TIMEOUT", "MINIO_ENDPOINT", "MINIO_BUCKET", "MINIO_SECURE", "MINIO_ACCESS_KEY", "MINIO_SECRET_KEY", "MINIO_TIMEOUT", "KAFKA_BROKERS", "KAFKA_JOBS_TOPIC", "KAFKA_DLQ_TOPIC", "KAFKA_CONSUMER_GROUP", "KAFKA_TIMEOUT"} {
 		t.Setenv(name, "")
 		if err := os.Unsetenv(name); err != nil {
 			t.Fatal(err)
@@ -203,6 +203,22 @@ func TestKafkaInvalidConfig(t *testing.T) {
 			_, e := Load(writeYAML(t, "log: {level: info, format: json}"+postgresYAML+minioYAML+kafkaYAML))
 			if e == nil || strings.Contains(e.Error(), "private-value") {
 				t.Fatal("missing or unsafe validation", e)
+			}
+		})
+	}
+}
+
+func TestApplicationSettings(t *testing.T) {
+	for _, tc := range []struct {
+		name, value string
+		valid       bool
+	}{{"HTTP_ADDRESS", "127.0.0.1:8088", true}, {"HTTP_ADDRESS", "bad", false}, {"HTTP_SHUTDOWN_TIMEOUT", "31s", false}, {"HTTP_READ_TIMEOUT", "0s", false}, {"STARTUP_TIMEOUT", "0s", false}, {"VALIDATION_CONCURRENCY", "0", false}, {"MIGRATIONS_DIR", "", false}} {
+		t.Run(tc.name+tc.value, func(t *testing.T) {
+			setupConfigENV(t)
+			t.Setenv(tc.name, tc.value)
+			_, e := Load(writeYAML(t, "log: {level: info, format: json}"+postgresYAML+minioYAML+kafkaYAML))
+			if (e == nil) != tc.valid {
+				t.Fatal(e)
 			}
 		})
 	}
