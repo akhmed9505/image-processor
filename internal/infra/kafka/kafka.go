@@ -2,6 +2,7 @@
 package kafka
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -129,14 +130,14 @@ type Producer struct{ client *kgo.Client }
 
 // NewProducer checks connectivity; the caller must close the producer.
 func NewProducer(ctx context.Context, cfg config.Kafka) (*Producer, error) {
-	client, err := connect(ctx, cfg, kgo.RequiredAcks(kgo.AllISRAcks()))
+	client, err := connect(ctx, cfg, kgo.RequiredAcks(kgo.AllISRAcks()), kgo.AllowIdempotentProduceCancellation())
 	if err != nil {
 		return nil, err
 	}
 	return &Producer{client}, nil
 }
 
-// Publish waits for broker acknowledgement, including in-flight cancellation.
+// Publish waits for broker acknowledgement or context cancellation.
 // Errors may leave delivery uncertain; idempotency covers only protocol retries.
 func (p *Producer) Publish(ctx context.Context, topic string, key, value []byte) error {
 	if topic == "" || len(key) == 0 {
@@ -145,10 +146,18 @@ func (p *Producer) Publish(ctx context.Context, topic string, key, value []byte)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := p.client.ProduceSync(ctx, &kgo.Record{Topic: topic, Key: key, Value: value}).FirstErr(); err != nil {
-		return fmt.Errorf("publish Kafka record: %w", err)
+	done := make(chan error, 1)
+	// The SDK may retain the record after a cancelled Publish returns.
+	p.client.Produce(ctx, &kgo.Record{Topic: topic, Key: bytes.Clone(key), Value: bytes.Clone(value)}, func(_ *kgo.Record, err error) { done <- err })
+	select {
+	case err := <-done:
+		if err != nil {
+			return fmt.Errorf("publish Kafka record: %w", err)
+		}
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("publish Kafka record: %w", ctx.Err())
 	}
-	return nil
 }
 
 // Close stops the producer and releases its connections.

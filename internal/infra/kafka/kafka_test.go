@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/akhmed9505/image-processor/internal/config"
+	"github.com/twmb/franz-go/pkg/kgo"
 )
 
 func TestInitializationCancellation(t *testing.T) {
@@ -40,5 +41,43 @@ func TestPublishInput(t *testing.T) {
 	cancel()
 	if e := p.Publish(ctx, "jobs", []byte("key"), nil); !errors.Is(e, context.Canceled) {
 		t.Fatal("lost context", e)
+	}
+}
+
+func TestPublishCancellationWhileBrokerUnavailable(t *testing.T) {
+	client, e := kgo.NewClient(kgo.SeedBrokers("127.0.0.1:1"), kgo.AllowIdempotentProduceCancellation())
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer client.Close()
+	p := &Producer{client: client}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if e := p.Publish(ctx, "jobs", []byte("key"), []byte("value")); !errors.Is(e, context.DeadlineExceeded) {
+		t.Fatal("publication did not preserve cancellation", e)
+	}
+}
+
+type captureRecord struct{ records chan *kgo.Record }
+
+func (h captureRecord) OnProduceRecordBuffered(record *kgo.Record) { h.records <- record }
+func TestCancelledPublishOwnsBuffers(t *testing.T) {
+	records := make(chan *kgo.Record, 1)
+	client, e := kgo.NewClient(kgo.SeedBrokers("127.0.0.1:1"), kgo.AllowIdempotentProduceCancellation(), kgo.WithHooks(captureRecord{records}))
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer client.Close()
+	key, value := []byte("key"), []byte("payload")
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if e := (&Producer{client: client}).Publish(ctx, "jobs", key, value); !errors.Is(e, context.DeadlineExceeded) {
+		t.Fatal(e)
+	}
+	record := <-records
+	key[0] = 'X'
+	value[0] = 'X'
+	if string(record.Key) != "key" || string(record.Value) != "payload" {
+		t.Fatal("cancelled publication retained caller buffers")
 	}
 }

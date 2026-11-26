@@ -2,12 +2,12 @@ package postgres
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"time"
 
+	"github.com/akhmed9505/image-processor/internal/service/outbox"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -15,18 +15,12 @@ import (
 
 var (
 	ErrInvalidOutboxInput    = errors.New("invalid outbox repository input")
-	ErrOutboxClaimFenced     = errors.New("outbox claim no longer owns a live lease")
-	ErrOutboxCommitUncertain = errors.New("outbox commit outcome is uncertain")
+	ErrOutboxClaimFenced     = outbox.ErrClaimFenced
+	ErrOutboxCommitUncertain = outbox.ErrCommitUncertain
 )
 
-// OutboxEvent contains a claimed event and the ownership required to finalize it.
-type OutboxEvent struct {
-	ID, EventType, Topic, MessageKey string
-	Payload                          json.RawMessage
-	ClaimToken                       string
-	LeaseUntil                       time.Time
-	PublishAttempts                  int
-}
+// OutboxEvent is the publisher's leased notification.
+type OutboxEvent = outbox.Event
 
 // OutboxRepository owns publication transactions; callers own pool.
 type OutboxRepository struct {
