@@ -68,6 +68,12 @@ func (r *StorageRepository) RegisterOriginal(ctx context.Context, key, imageID s
 	return object, nil
 }
 
+// ReserveOriginal registers an upload intent without exposing registry records to callers.
+func (r *StorageRepository) ReserveOriginal(ctx context.Context, key, imageID string, ttl time.Duration) error {
+	_, err := r.RegisterOriginal(ctx, key, imageID, ttl)
+	return err
+}
+
 // GetByKey returns a registry record, including discarded and expired records.
 func (r *StorageRepository) GetByKey(ctx context.Context, key string) (StorageObject, error) {
 	object, err := scanStorageObject(r.pool.QueryRow(ctx, `SELECT `+storageColumns+` FROM storage_objects WHERE object_key=$1`, key))

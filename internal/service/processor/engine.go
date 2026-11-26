@@ -47,14 +47,8 @@ type Result struct {
 // Process writes one result; callers must discard partial output on error.
 // Reader and writer must support interruption themselves if their I/O can block.
 func Process(ctx context.Context, input io.Reader, output io.Writer, operation domain.Operation, params domain.OperationParams) (Result, error) {
-	if err := params.Validate(operation); err != nil {
+	if err := ValidateOperation(operation, params); err != nil {
 		return Result{}, err
-	}
-	if operation == domain.OperationThumbnail && params.Thumbnail.Size > MaxThumbnailSize {
-		return Result{}, ErrLimitExceeded
-	}
-	if operation == domain.OperationResize && (params.Resize.Width > MaxDimension || params.Resize.Height > MaxDimension) {
-		return Result{}, ErrLimitExceeded
 	}
 	original, err := readOriginal(ctx, input)
 	if err != nil {

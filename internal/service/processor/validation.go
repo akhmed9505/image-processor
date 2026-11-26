@@ -7,6 +7,8 @@ import (
 	"image"
 	"image/color"
 	"io"
+
+	"github.com/akhmed9505/image-processor/internal/domain"
 )
 
 // OriginalInfo describes the encoded original and its orientation-normalized dimensions.
@@ -109,4 +111,18 @@ func (o originalImage) decode(ctx context.Context) (image.Image, error) {
 		return orientedImage{decoded, o.orientation, image.Rect(0, 0, o.info.Width, o.info.Height)}, nil
 	}
 	return decoded, nil
+}
+
+// ValidateOperation checks domain parameters and processing resource limits.
+func ValidateOperation(operation domain.Operation, params domain.OperationParams) error {
+	if err := params.Validate(operation); err != nil {
+		return err
+	}
+	if operation == domain.OperationThumbnail && params.Thumbnail.Size > MaxThumbnailSize {
+		return ErrLimitExceeded
+	}
+	if operation == domain.OperationResize && (params.Resize.Width > MaxDimension || params.Resize.Height > MaxDimension) {
+		return ErrLimitExceeded
+	}
+	return nil
 }
