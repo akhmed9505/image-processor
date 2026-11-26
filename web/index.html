@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ImageProcessor — обработка изображений</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <main class="shell">
+    <h1>ImageProcessor</h1>
+    <noscript><p class="notice error">Для загрузки и обработки изображений включите JavaScript.</p></noscript>
+    <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+    <div class="workspace">
+      <section class="upload-panel panel" aria-labelledby="upload-heading">
+        <div class="section-heading"><h2 id="upload-heading">Новое изображение</h2></div>
+        <form id="upload-form">
+          <fieldset id="upload-fields">
+            <div class="file-picker">
+              <input id="file" type="file" accept="image/jpeg,image/png" aria-label="Выбрать JPEG или PNG" required>
+              <div id="file-placeholder"><strong>Выбрать изображение</strong><span>JPEG или PNG · до 20 MiB</span></div>
+              <img id="file-preview" alt="Предварительный просмотр выбранного изображения" hidden>
+            </div>
+            <p id="file-info" class="file-info">До 25 MP, не более 10 000 px по стороне.</p>
+            <div class="section-heading operations-heading"><h3>Преобразования</h3><span class="muted">Можно выбрать несколько</span></div>
+            <div class="operation">
+              <label class="operation-choice"><input type="checkbox" id="resize" checked><span><strong>Resize</strong><small>Вписать в размер, сохранив пропорции</small></span></label>
+              <div class="operation-params" id="resize-params"><label>Ширина, px<input id="width" type="number" min="1" max="10000" step="1" value="1200" required></label><span class="times" aria-hidden="true">×</span><label>Высота, px<input id="height" type="number" min="1" max="10000" step="1" value="800" required></label></div>
+            </div>
+            <div class="operation">
+              <label class="operation-choice"><input type="checkbox" id="thumbnail"><span><strong>Thumbnail</strong><small>Квадрат с обрезкой по центру</small></span></label>
+              <div class="operation-params" id="thumbnail-params" hidden><label>Сторона, px<input id="size" type="number" min="1" max="2048" step="1" value="256" required disabled></label><span class="muted">1–2048 px</span></div>
+            </div>
+            <div class="operation"><label class="operation-choice"><input type="checkbox" id="watermark"><span><strong>Watermark</strong><small>Подпись ImageProcessor с тенью</small></span></label></div>
+          </fieldset>
+          <p id="upload-error" class="inline-error" role="alert" hidden></p>
+          <button class="button submit" id="submit" type="submit"><span id="submit-label">Начать обработку</span></button>
+        </form>
+      </section>
+      <section class="library" aria-labelledby="library-heading">
+        <div class="section-heading library-heading"><h2 id="library-heading">Изображения</h2><button id="refresh" class="button" type="button" aria-label="Обновить список">Обновить</button></div>
+        <p id="list-message" class="muted" role="status">Загружаем список…</p>
+        <div id="images" class="image-grid" aria-live="off"></div>
+        <div id="empty" class="empty panel" hidden><p>Нет загруженных изображений.</p></div>
+        <button id="load-more" class="button load-more" type="button" hidden>Показать ещё</button>
+      </section>
+    </div>
+  </main>
+  <dialog id="viewer" aria-labelledby="viewer-title">
+    <div class="dialog-heading"><div><h2 id="viewer-title"></h2></div><button class="button" id="close-viewer" type="button" aria-label="Закрыть просмотр">Закрыть</button></div>
+    <div id="versions" class="versions" role="group" aria-label="Варианты изображения"></div>
+    <div class="viewer-stage"><img id="viewer-image" alt=""><p id="viewer-message" role="status" hidden></p></div>
+    <div class="viewer-footer"><p id="viewer-meta" class="muted"></p><a id="download" class="button" download>Скачать</a></div>
+    <ul id="job-details" class="job-details" aria-label="Состояние операций"></ul>
+  </dialog>
+  <dialog id="delete-dialog" aria-labelledby="delete-title" aria-describedby="delete-description">
+    <h2 id="delete-title">Удалить изображение?</h2><p id="delete-description">Оригинал и все результаты станут недоступны.</p><p id="delete-name" class="delete-name"></p>
+    <p id="delete-error" class="inline-error" role="alert" hidden></p>
+    <div class="dialog-actions"><button id="cancel-delete" class="button" type="button">Отмена</button><button id="confirm-delete" class="button" type="button">Удалить</button></div>
+  </dialog>
+  <template id="image-card">
+    <article class="image-card panel">
+      <button class="card-preview" type="button" aria-label="Открыть изображение"><img alt="" loading="lazy"><span class="preview-unavailable" hidden>Предпросмотр недоступен</span></button>
+      <div class="card-body"><div class="card-heading"><h3></h3><span class="badge"></span></div><p class="card-meta muted"></p><div class="job-chips"></div><div class="card-actions"><button class="button open" type="button">Открыть</button><button class="button remove" type="button" aria-label="Удалить изображение">Удалить</button></div></div>
+    </article>
+  </template>
+</body>
+</html>

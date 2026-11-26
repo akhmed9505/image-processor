@@ -1,5 +1,6 @@
 **
 !Dockerfile
+!Dockerfile.minio
 !go.mod
 !go.sum
 !cmd/
@@ -10,6 +11,10 @@
 !configs/config.yml
 !migrations/
 !migrations/*.sql
+!web/
+!web/index.html
+!web/styles.css
+!web/app.js
 **/*_test.go
 **/AGENTS.md
 **/.env

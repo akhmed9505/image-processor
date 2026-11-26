@@ -1,4 +1,0 @@
-# MinIO builds only pinned remote sources.
-**
-!Dockerfile.minio
-!Dockerfile.minio.dockerignore

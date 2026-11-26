@@ -92,6 +92,11 @@ func TestComposeStack(t *testing.T) {
 		}
 		return response.StatusCode, data
 	}
+	for path, content := range map[string]string{"/": "<html lang=\"ru\">", "/app.js": "FormData", "/styles.css": ".workspace"} {
+		if status, data := request("GET", path, nil, ""); status != 200 || !bytes.Contains(data, []byte(content)) {
+			t.Fatal("web asset missing from application image", path, status)
+		}
+	}
 	results := map[string]map[string][]byte{}
 	originals := map[string][]byte{}
 	for _, format := range []string{"jpeg", "png"} {

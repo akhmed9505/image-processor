@@ -7,10 +7,13 @@ import (
 	"strings"
 )
 
-// NewRouter returns the API handler with request logging and panic recovery.
+// NewRouter serves the API and web UI with request logging and panic recovery.
 func NewRouter(upload Uploader, images Images, logger *slog.Logger) http.Handler {
 	h := handlers{upload, images, logger}
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /{$}", h.index)
+	mux.HandleFunc("GET /app.js", h.asset)
+	mux.HandleFunc("GET /styles.css", h.asset)
 	mux.HandleFunc("POST /upload", h.uploadImage)
 	mux.HandleFunc("GET /images", h.list)
 	mux.HandleFunc("GET /image/{id}", h.content)

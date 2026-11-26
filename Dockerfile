@@ -14,6 +14,7 @@ COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certifica
 COPY --from=build /out/server /out/worker /usr/local/bin/
 COPY configs/config.yml configs/config.yml
 COPY migrations/*.sql migrations/
+COPY web/ web/
 USER 65532:65532
 EXPOSE 8080
 STOPSIGNAL SIGTERM

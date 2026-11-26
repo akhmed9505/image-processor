@@ -45,6 +45,14 @@ type handlers struct {
 	logger *slog.Logger
 }
 
+func (h handlers) index(w http.ResponseWriter, r *http.Request) {
+	http.ServeFile(w, r, "web/index.html")
+}
+
+func (h handlers) asset(w http.ResponseWriter, r *http.Request) {
+	http.ServeFile(w, r, "web/"+strings.TrimPrefix(r.URL.Path, "/"))
+}
+
 func (h handlers) uploadImage(w http.ResponseWriter, r *http.Request) {
 	if !validQuery(r, nil) {
 		badRequest(w)

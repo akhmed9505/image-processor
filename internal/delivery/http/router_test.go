@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -11,6 +12,36 @@ import (
 	service "github.com/akhmed9505/image-processor/internal/service/image"
 	"github.com/google/uuid"
 )
+
+func TestRouterWeb(t *testing.T) {
+	t.Chdir(filepath.Join("..", "..", ".."))
+	router := NewRouter(nil, nil, testLogger())
+	for _, tc := range []struct {
+		path, contentType, content string
+	}{
+		{"/", "text/html", "<html lang=\"ru\">"},
+		{"/styles.css", "text/css", ".workspace"},
+		{"/app.js", "javascript", "FormData"},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			w := call(router, "GET", tc.path)
+			if w.Code != 200 || !strings.Contains(w.Header().Get("Content-Type"), tc.contentType) || !strings.Contains(w.Body.String(), tc.content) {
+				t.Fatal(w.Code, w.Header(), w.Body.String())
+			}
+			if w := call(router, "HEAD", tc.path); w.Code != 200 || w.Body.Len() != 0 {
+				t.Fatal("HEAD", w.Code, w.Body.String())
+			}
+		})
+	}
+	for _, path := range []string{"/.env", "/AGENTS.md", "/.git/config", "/web/index.html", "/internal/app/app.go", "/index.html", "/app.js/extra"} {
+		if w := call(router, "GET", path); w.Code != 404 || !strings.Contains(w.Body.String(), `"error"`) {
+			t.Fatal(path, w.Code, w.Body.String())
+		}
+	}
+	if w := call(router, "POST", "/"); w.Code != 405 {
+		t.Fatal(w.Code)
+	}
+}
 
 func TestRouterRoutingErrors(t *testing.T) {
 	router := NewRouter(nil, nil, testLogger())
