@@ -5,17 +5,22 @@ package integration
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"image"
 	"io"
+	"log/slog"
 	"net"
 	"os"
 	"testing"
 	"time"
 
+	delivery "github.com/akhmed9505/image-processor/internal/delivery/kafka"
 	"github.com/akhmed9505/image-processor/internal/domain"
+	infrastructure "github.com/akhmed9505/image-processor/internal/infra/kafka"
 	objectstorage "github.com/akhmed9505/image-processor/internal/infra/storage"
 	repository "github.com/akhmed9505/image-processor/internal/repository/postgres"
+	"github.com/akhmed9505/image-processor/internal/service/outbox"
 	service "github.com/akhmed9505/image-processor/internal/service/processor"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -362,4 +367,128 @@ func TestJobServiceTemporaryFiles(t *testing.T) {
 	if e != nil || len(files) != 0 {
 		t.Fatal("temporary files leaked", files, e)
 	}
+}
+
+func TestJobExhaustionPublishesDLQ(t *testing.T) {
+	p := migratedReadPool(t)
+	storage := uploadStorage(t)
+	cfg, producer := setupPublisherKafka(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	img, err := imageUpload(t, p, storage).Upload(ctx, "retry.png", bytes.NewReader(uploadBytes(t, "png")), uploadOperations()[:1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobID := img.Jobs[0].ID
+	if _, err := p.Exec(ctx, "UPDATE outbox SET topic=$1", cfg.JobsTopic); err != nil {
+		t.Fatal(err)
+	}
+	jobs, err := repository.NewJobRepository(p, repository.JobRepositoryOptions{JobsTopic: cfg.JobsTopic, DLQTopic: cfg.DLQTopic, MaxAttempts: service.MaxAttempts, LeaseDuration: service.AttemptLease, RedispatchInterval: service.RedispatchInterval})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := infrastructure.NewConsumer(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.CloseAllowingRebalance()
+	processor := service.NewJobService(jobs, processingStorage{storage, func(context.Context, string) error { return io.ErrUnexpectedEOF }})
+	consumer := delivery.New(client, processor, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	workCtx, stop := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	go func() { done <- consumer.Run(workCtx) }()
+	defer func() {
+		stop()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Error(err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Error("consumer did not stop")
+		}
+	}()
+	outboxRepo, err := repository.NewOutboxRepository(p, outbox.ClaimLease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopPublisher := runPublisher(t, outboxRepo, producer)
+	defer stopPublisher()
+	for attempt := 1; attempt <= 5; attempt++ {
+		awaitOutboxState(t, ctx, func() (bool, error) {
+			var status string
+			var attempts int
+			err := p.QueryRow(ctx, "SELECT status,attempts FROM jobs WHERE id=$1", jobID).Scan(&status, &attempts)
+			want := "retrying"
+			if attempt == 5 {
+				want = "failed"
+			}
+			return attempts == attempt && status == want, err
+		})
+		if attempt < 5 {
+			var delay float64
+			if err := p.QueryRow(ctx, "SELECT extract(epoch FROM next_retry_at-updated_at) FROM jobs WHERE id=$1", jobID).Scan(&delay); err != nil {
+				t.Fatal(err)
+			}
+			base := []float64{5, 15, 45, 135}[attempt-1]
+			if delay < base*.8-1 || delay > base*1.2+1 {
+				t.Fatalf("retry delay %f at attempt %d", delay, attempt)
+			}
+			// Advance only this fixture's schedule after checking the real retry policy.
+			tx, err := p.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = tx.Exec(ctx, "UPDATE jobs SET next_retry_at=clock_timestamp()-interval '1 second' WHERE id=$1", jobID)
+			if err == nil {
+				_, err = tx.Exec(ctx, "UPDATE outbox SET available_at=clock_timestamp() WHERE job_id=$1 AND published_at IS NULL", jobID)
+			}
+			if err != nil {
+				_ = tx.Rollback(ctx)
+				t.Fatal(err)
+			}
+			if err := tx.Commit(ctx); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	dlqConfig := cfg
+	dlqConfig.JobsTopic = cfg.DLQTopic
+	dlqConfig.DLQTopic = cfg.JobsTopic
+	dlqConfig.ConsumerGroup += "-dlq"
+	dlq, err := infrastructure.NewConsumer(ctx, dlqConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dlq.CloseAllowingRebalance()
+	record := pollKafkaRecord(t, ctx, dlq)
+	dlq.AllowRebalance()
+	var event struct {
+		EventType string `json:"event_type"`
+		Version   int    `json:"version"`
+		JobID     string `json:"job_id"`
+		ImageID   string `json:"image_id"`
+		Attempts  int    `json:"attempts"`
+		ErrorCode string `json:"error_code"`
+	}
+	if err := json.Unmarshal(record.Value, &event); err != nil {
+		t.Fatal(err)
+	}
+	if record.Topic != cfg.DLQTopic || string(record.Key) != jobID || event.EventType != "image.processing.failed" || event.Version != 1 || event.JobID != jobID || event.ImageID != img.ID || event.Attempts != 5 || event.ErrorCode != "processing_unavailable" {
+		t.Fatalf("unexpected DLQ record: %s", record.Value)
+	}
+	awaitOutboxState(t, ctx, func() (bool, error) {
+		var published bool
+		err := p.QueryRow(ctx, "SELECT published_at IS NOT NULL FROM outbox WHERE job_id=$1 AND event_type='image.processing.failed'", jobID).Scan(&published)
+		return published, err
+	})
+	var discarded int
+	if err := p.QueryRow(ctx, "SELECT count(*) FROM storage_objects WHERE job_id=$1 AND state='discarded'", jobID).Scan(&discarded); err != nil || discarded != 5 {
+		t.Fatal("attempt intents", discarded, err)
+	}
+	page, err := storage.List(ctx, img.ID+"/", "", 10)
+	if err != nil || len(page.Objects) != 6 {
+		t.Fatal("original and five PUTs must remain for safe cleanup", len(page.Objects), err)
+	}
+	t.Log("five transient failures: retries, discarded intents, terminal failure and broker-delivered DLQ confirmed")
 }

@@ -101,16 +101,27 @@ func (s *UploadService) Upload(ctx context.Context, name string, input io.Reader
 	if err := ctx.Err(); err != nil {
 		return domain.Image{}, err
 	}
-	if err := s.registry.ReserveOriginal(ctx, image.OriginalKey, image.ID, OriginalIntentTTL); err != nil {
+	dbCtx, cancel := context.WithTimeout(ctx, imageDatabaseTimeout)
+	err = s.registry.ReserveOriginal(dbCtx, image.OriginalKey, image.ID, OriginalIntentTTL)
+	cancel()
+	if err != nil {
 		return domain.Image{}, fmt.Errorf("reserve upload intent: %w", err)
 	}
-	if err := s.storage.Put(ctx, image.OriginalKey, file, image.SizeBytes, image.ContentType); err != nil {
+	if err := ctx.Err(); err != nil {
+		return domain.Image{}, err
+	}
+	storageCtx, cancel := context.WithTimeout(ctx, imageStorageTimeout)
+	err = s.storage.Put(storageCtx, image.OriginalKey, file, image.SizeBytes, image.ContentType)
+	cancel()
+	if err != nil {
 		return domain.Image{}, fmt.Errorf("store original: %w", err)
 	}
 	if err := ctx.Err(); err != nil {
 		return domain.Image{}, err
 	}
-	created, err := s.repository.Create(ctx, image)
+	dbCtx, cancel = context.WithTimeout(ctx, imageDatabaseTimeout)
+	created, err := s.repository.Create(dbCtx, image)
+	cancel()
 	if err != nil {
 		return domain.Image{}, fmt.Errorf("finalize upload %s: %w", image.ID, err)
 	}

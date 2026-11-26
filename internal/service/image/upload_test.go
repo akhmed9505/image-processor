@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"image"
 	"image/jpeg"
 	"image/png"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/akhmed9505/image-processor/internal/domain"
@@ -288,4 +290,80 @@ func TestConfiguredValidationConcurrency(t *testing.T) {
 		}
 	}
 	assertNoSpools(t)
+}
+
+func TestUploadInfrastructureContexts(t *testing.T) {
+	for _, mode := range []string{"success", "timeout", "parent deadline", "parent cancellation"} {
+		for failedStage := 0; failedStage < 3; failedStage++ {
+			t.Run(fmt.Sprintf("%s/stage-%d", mode, failedStage), func(t *testing.T) {
+				t.Setenv("TMPDIR", t.TempDir())
+				data := original(t, "png")
+				synctest.Test(t, func(t *testing.T) {
+					parent, cancel := context.WithCancel(context.Background())
+					defer cancel()
+					if mode == "parent deadline" {
+						var stop context.CancelFunc
+						parent, stop = context.WithTimeout(parent, time.Second)
+						defer stop()
+					}
+					var calls []context.Context
+					call := func(ctx context.Context) error {
+						stage := len(calls)
+						for _, previous := range calls {
+							if previous.Err() != context.Canceled {
+								t.Fatal("previous operation context was not released")
+							}
+						}
+						calls = append(calls, ctx)
+						limit := 5 * time.Second
+						if stage == 1 {
+							limit = 30 * time.Second
+						}
+						want := time.Now().Add(limit)
+						if deadline, ok := parent.Deadline(); ok && deadline.Before(want) {
+							want = deadline
+						}
+						if deadline, ok := ctx.Deadline(); !ok || !deadline.Equal(want) {
+							t.Fatalf("stage %d deadline %v, want %v", stage, deadline, want)
+						}
+						if stage == failedStage && mode != "success" {
+							if mode == "parent cancellation" {
+								cancel()
+							}
+							<-ctx.Done()
+							return ctx.Err()
+						}
+						return nil
+					}
+					s, _ := NewUploadService(
+						repositoryMock{func(ctx context.Context, img domain.Image) (domain.Image, error) { return img, call(ctx) }},
+						registryMock{func(ctx context.Context, _, _ string, _ time.Duration) error { return call(ctx) }},
+						storageMock{func(ctx context.Context, _ string, _ io.Reader, _ int64, _ string) error { return call(ctx) }}, 1)
+					_, err := s.Upload(parent, "input.png", bytes.NewReader(data), choices())
+					if mode == "success" {
+						if err != nil || len(calls) != 3 || parent.Err() != nil {
+							t.Fatal(err, len(calls))
+						}
+					} else {
+						want := context.DeadlineExceeded
+						if mode == "parent cancellation" {
+							want = context.Canceled
+						}
+						if !errors.Is(err, want) || len(calls) != failedStage+1 {
+							t.Fatal(err, len(calls))
+						}
+						if mode == "timeout" && parent.Err() != nil {
+							t.Fatal("child timeout cancelled parent")
+						}
+					}
+					for _, ctx := range calls {
+						if ctx.Err() == nil {
+							t.Fatal("operation context leaked")
+						}
+					}
+				})
+				assertNoSpools(t)
+			})
+		}
+	}
 }
