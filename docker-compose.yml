@@ -1,7 +1,82 @@
 name: imageprocessor
+x-app: &app
+  image: imageprocessor-app:local
+  build:
+    context: .
+    dockerfile: Dockerfile
+  environment:
+    LOG_LEVEL: ${LOG_LEVEL:-info}
+    LOG_FORMAT: ${LOG_FORMAT:-json}
+    POSTGRES_HOST: postgres
+    POSTGRES_PORT: "5432"
+    POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB}
+    POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER}
+    POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    POSTGRES_MAX_CONNS: ${POSTGRES_MAX_CONNS:-10}
+    POSTGRES_TIMEOUT: ${POSTGRES_TIMEOUT:-5s}
+    MINIO_ENDPOINT: minio:9000
+    MINIO_BUCKET: ${MINIO_BUCKET:-images}
+    MINIO_SECURE: "false"
+    MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?set MINIO_ACCESS_KEY}
+    MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?set MINIO_SECRET_KEY}
+    MINIO_TIMEOUT: ${MINIO_TIMEOUT:-5s}
+    KAFKA_BROKERS: kafka:9092
+    KAFKA_JOBS_TOPIC: ${KAFKA_JOBS_TOPIC:-image.processing.jobs}
+    KAFKA_DLQ_TOPIC: ${KAFKA_DLQ_TOPIC:-image.processing.dlq}
+    KAFKA_CONSUMER_GROUP: ${KAFKA_CONSUMER_GROUP:-image-processor-workers}
+    KAFKA_TIMEOUT: ${KAFKA_TIMEOUT:-10s}
+    HTTP_ADDRESS: :8080
+    HTTP_READ_HEADER_TIMEOUT: ${HTTP_READ_HEADER_TIMEOUT:-5s}
+    HTTP_READ_TIMEOUT: ${HTTP_READ_TIMEOUT:-60s}
+    HTTP_WRITE_TIMEOUT: ${HTTP_WRITE_TIMEOUT:-120s}
+    HTTP_IDLE_TIMEOUT: ${HTTP_IDLE_TIMEOUT:-60s}
+    HTTP_SHUTDOWN_TIMEOUT: ${HTTP_SHUTDOWN_TIMEOUT:-30s}
+    STARTUP_TIMEOUT: ${STARTUP_TIMEOUT:-30s}
+    VALIDATION_CONCURRENCY: ${VALIDATION_CONCURRENCY:-1}
+    MIGRATIONS_DIR: migrations
 services:
+  migrate:
+    <<: *app
+    command: ["server", "-migrate"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+  server:
+    <<: *app
+    command: ["server"]
+    ports:
+      - "127.0.0.1:${HTTP_PORT:-8080}:8080"
+    stop_grace_period: 60s
+    depends_on: &application-dependencies
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/images?limit=1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+  worker:
+    <<: *app
+    command: ["worker"]
+    stop_grace_period: 60s
+    depends_on: *application-dependencies
+    # Consumer liveness; infrastructure readiness is gated by depends_on.
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
   postgres:
-    image: postgres:18.1-bookworm@sha256:cc9f4143a8d2fa8cf3749d0cb4d26ecf2d53a77a2ac807e9ebd67ae22426221a
+    image: postgres:18.7-bookworm@sha256:e742a2668255221388004f3a42b6150a2103f5054ab3a4a93ae9e4f01e551c35
     environment:
       POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER}
@@ -50,7 +125,8 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
-      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      # Avoid the image's anonymous /var/lib/kafka/data mount.
+      KAFKA_LOG_DIRS: /var/lib/kafka/logs
       KAFKA_HEAP_OPTS: -Xms256m -Xmx512m
     ports:
       - "127.0.0.1:${KAFKA_PORT:-29092}:9094"

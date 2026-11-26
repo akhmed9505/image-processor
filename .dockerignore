@@ -1,4 +1,17 @@
-# MinIO builds from pinned remote sources and needs no local project files.
 **
-!Dockerfile.minio
-!.dockerignore
+!Dockerfile
+!go.mod
+!go.sum
+!cmd/
+!cmd/**
+!internal/
+!internal/**
+!configs/
+!configs/config.yml
+!migrations/
+!migrations/*.sql
+**/*_test.go
+**/AGENTS.md
+**/.env
+**/.env.*
+.git
