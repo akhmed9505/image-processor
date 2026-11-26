@@ -6,18 +6,19 @@ import (
 	"fmt"
 	"time"
 
+	imageService "github.com/akhmed9505/image-processor/internal/service/image"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// StorageState describes the lifecycle of a registered object.
-type StorageState string
+// StorageState describes a registered object's lifecycle.
+type StorageState = imageService.StorageState
 
 // Storage object states; discarded is terminal.
 const (
-	StorageStateWriting   StorageState = "writing"
-	StorageStateRetained  StorageState = "retained"
-	StorageStateDiscarded StorageState = "discarded"
+	StorageStateWriting   = imageService.StorageStateWriting
+	StorageStateRetained  = imageService.StorageStateRetained
+	StorageStateDiscarded = imageService.StorageStateDiscarded
 )
 
 var (
@@ -28,16 +29,7 @@ var (
 )
 
 // StorageObject is a registry record; original intents have no JobID or AttemptToken.
-type StorageObject struct {
-	ObjectKey    string
-	ImageID      string
-	JobID        string
-	AttemptToken string
-	State        StorageState
-	WriteUntil   time.Time
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
-}
+type StorageObject = imageService.StorageObject
 
 // StorageRepository manages original write intents and reads registry records.
 type StorageRepository struct{ pool *pgxpool.Pool }

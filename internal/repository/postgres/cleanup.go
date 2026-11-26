@@ -8,6 +8,7 @@ import (
 	"sort"
 	"time"
 
+	imageService "github.com/akhmed9505/image-processor/internal/service/image"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -15,15 +16,12 @@ import (
 
 var (
 	ErrInvalidCleanupInput    = errors.New("invalid cleanup repository input")
-	ErrCleanupFenced          = errors.New("cleanup claim no longer owns a live lease")
-	ErrCleanupCommitUncertain = errors.New("cleanup commit outcome is uncertain")
+	ErrCleanupFenced          = imageService.ErrCleanupFenced
+	ErrCleanupCommitUncertain = imageService.ErrCleanupCommitUncertain
 )
 
 // CleanupClaim grants temporary ownership of a deleted image cleanup pass.
-type CleanupClaim struct {
-	ImageID, Token string
-	LeaseUntil     time.Time
-}
+type CleanupClaim = imageService.CleanupClaim
 
 // CleanupRepository coordinates cleanup without deleting registry or image rows.
 type CleanupRepository struct {
@@ -133,16 +131,22 @@ func (r *CleanupRepository) finish(ctx context.Context, id, token string, nextAt
 
 // CleanupPage separates objects authorized for deletion from scan progress.
 // An empty NextCursor ends the pass; Objects may be empty before that point.
-type CleanupPage struct {
-	Objects    []StorageObject
-	NextCursor string
-}
+type CleanupPage = imageService.CleanupPage
 
 // FindDeletable discards at most limit objects past write_until+grace in any state,
 // protecting active references and leases. Records remain discoverable for late PUTs.
 // Start with afterKey=""; NextCursor advances in C order even when Objects is empty.
 // Uncertain COMMIT returns no objects or cursor and does not authorize deletion.
 func (r *CleanupRepository) FindDeletable(ctx context.Context, limit int, afterKey string, grace time.Duration) (CleanupPage, error) {
+	return r.findDeletable(ctx, limit, afterKey, grace, nil)
+}
+
+// FindDeletableForImage authorizes only the claimed image's objects under a live cleanup claim.
+func (r *CleanupRepository) FindDeletableForImage(ctx context.Context, limit int, afterKey string, grace time.Duration, claim CleanupClaim) (CleanupPage, error) {
+	return r.findDeletable(ctx, limit, afterKey, grace, &claim)
+}
+
+func (r *CleanupRepository) findDeletable(ctx context.Context, limit int, afterKey string, grace time.Duration, claim *CleanupClaim) (CleanupPage, error) {
 	if limit < 1 || limit > math.MaxInt32 || grace < 0 {
 		return CleanupPage{}, ErrInvalidCleanupInput
 	}
@@ -151,11 +155,35 @@ func (r *CleanupRepository) FindDeletable(ctx context.Context, limit int, afterK
 		return CleanupPage{}, fmt.Errorf("begin object cleanup: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	var imageID any
+	if claim != nil {
+		token, err := uuid.Parse(claim.Token)
+		if err != nil {
+			return CleanupPage{}, ErrCleanupFenced
+		}
+		var id string
+		if err := tx.QueryRow(ctx, "SELECT id::text FROM images WHERE id=$1 FOR UPDATE", claim.ImageID).Scan(&id); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return CleanupPage{}, ErrCleanupFenced
+			}
+			return CleanupPage{}, fmt.Errorf("lock cleanup image: %w", err)
+		}
+		var live bool
+		if err := tx.QueryRow(ctx, "SELECT COALESCE(deleted_at IS NOT NULL AND cleanup_token=$2 AND cleanup_lease_until>clock_timestamp(),false) FROM images WHERE id=$1", id, token.String()).Scan(&live); err != nil {
+			return CleanupPage{}, err
+		}
+		if !live {
+			return CleanupPage{}, ErrCleanupFenced
+		}
+		imageID = id
+	}
+
 	rows, err := tx.Query(ctx, `SELECT object_key FROM storage_objects WHERE object_key COLLATE "C">$3 COLLATE "C" AND write_until+$2::bigint*interval '1 microsecond'<=clock_timestamp()
  AND NOT EXISTS(SELECT 1 FROM images i WHERE i.deleted_at IS NULL AND (i.original_key=storage_objects.object_key OR EXISTS
  (SELECT 1 FROM jobs j WHERE j.image_id=i.id AND j.status='completed' AND j.result_key=storage_objects.object_key)))
  AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.id=storage_objects.job_id AND j.status='processing' AND j.attempt_token=storage_objects.attempt_token AND j.lease_until>clock_timestamp())
- ORDER BY object_key COLLATE "C" LIMIT $1`, limit, grace.Microseconds(), afterKey)
+ AND ($4::uuid IS NULL OR image_id=$4)
+ ORDER BY object_key COLLATE "C" LIMIT $1`, limit, grace.Microseconds(), afterKey, imageID)
 	if err != nil {
 		return CleanupPage{}, fmt.Errorf("find cleanup candidates: %w", err)
 	}
@@ -173,6 +201,15 @@ func (r *CleanupRepository) FindDeletable(ctx context.Context, limit int, afterK
 	if _, err := tx.Exec(ctx, "SELECT object_key FROM storage_objects WHERE object_key=ANY($1::text[]) ORDER BY object_key FOR UPDATE", keys); err != nil {
 		return CleanupPage{}, fmt.Errorf("lock cleanup objects: %w", err)
 	}
+	if claim != nil {
+		var live bool
+		if err := tx.QueryRow(ctx, "SELECT cleanup_lease_until>clock_timestamp() FROM images WHERE id=$1", claim.ImageID).Scan(&live); err != nil {
+			return CleanupPage{}, err
+		}
+		if !live {
+			return CleanupPage{}, ErrCleanupFenced
+		}
+	}
 	rows, err = tx.Query(ctx, `UPDATE storage_objects s SET state='discarded',updated_at=clock_timestamp()
  WHERE object_key=ANY($1::text[]) AND write_until+$2::bigint*interval '1 microsecond'<=clock_timestamp()
  AND NOT EXISTS(SELECT 1 FROM images i WHERE i.deleted_at IS NULL AND (i.original_key=s.object_key OR EXISTS
@@ -185,6 +222,15 @@ func (r *CleanupRepository) FindDeletable(ctx context.Context, limit int, afterK
 	objects, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (StorageObject, error) { return scanStorageObject(row) })
 	if err != nil {
 		return CleanupPage{}, err
+	}
+	if claim != nil {
+		var live bool
+		if err := tx.QueryRow(ctx, "SELECT cleanup_lease_until>clock_timestamp() FROM images WHERE id=$1", claim.ImageID).Scan(&live); err != nil {
+			return CleanupPage{}, err
+		}
+		if !live {
+			return CleanupPage{}, ErrCleanupFenced
+		}
 	}
 	if err := commitCleanup(ctx, tx); err != nil {
 		return CleanupPage{}, err
