@@ -7,9 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/akhmed9505/image-processor/internal/domain"
+	imageService "github.com/akhmed9505/image-processor/internal/service/image"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -19,16 +19,10 @@ import (
 var ErrInvalidPagination = errors.New("invalid image pagination")
 
 // ImageCursor identifies the last image of the previous page.
-type ImageCursor struct {
-	CreatedAt time.Time
-	ID        string
-}
+type ImageCursor = imageService.ImageCursor
 
-// ImagePage contains images and a cursor for the next page, if any.
-type ImagePage struct {
-	Images     []domain.Image
-	NextCursor *ImageCursor
-}
+// ImagePage contains repository records and a cursor for the next page.
+type ImagePage = imageService.ImageRecords
 
 // ImageRepository reads active images and their complete job sets.
 type ImageRepository struct{ pool *pgxpool.Pool }

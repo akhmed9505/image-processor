@@ -10,13 +10,14 @@ import (
 	"time"
 
 	"github.com/akhmed9505/image-processor/internal/config"
+	imageService "github.com/akhmed9505/image-processor/internal/service/image"
 	"github.com/akhmed9505/image-processor/internal/service/processor"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 )
 
 // ErrObjectNotFound identifies an absent object without hiding the S3 error.
-var ErrObjectNotFound = errors.New("storage object not found")
+var ErrObjectNotFound = imageService.ErrContentNotFound
 
 // ObjectInfo describes a stored object; ETag is not necessarily a content hash.
 // ContentType is populated by Get and Stat.
@@ -99,6 +100,12 @@ func (s *Storage) Get(ctx context.Context, key string) (io.ReadCloser, ObjectInf
 		return nil, ObjectInfo{}, storageError("get object", err)
 	}
 	return body, objectInfo(info), nil
+}
+
+// Open returns a stream without exposing storage metadata to consumers.
+func (s *Storage) Open(ctx context.Context, key string) (io.ReadCloser, error) {
+	body, _, err := s.Get(ctx, key)
+	return body, err
 }
 
 // OpenOriginal opens the processing input, translating absence to the service contract.
