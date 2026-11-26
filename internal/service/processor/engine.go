@@ -1,4 +1,4 @@
-// Package processor transforms JPEG and PNG images independently of services and storage.
+// Package processor transforms JPEG and PNG images and coordinates job attempts.
 package processor
 
 import (

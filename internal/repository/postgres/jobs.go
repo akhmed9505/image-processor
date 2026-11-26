@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/akhmed9505/image-processor/internal/domain"
+	"github.com/akhmed9505/image-processor/internal/service/processor"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -18,40 +19,26 @@ import (
 var (
 	ErrJobNotFound        = errors.New("job not found")
 	ErrInvalidJobInput    = errors.New("invalid job repository input")
-	ErrAttemptFenced      = errors.New("job attempt no longer owns a live lease")
+	ErrAttemptFenced      = processor.ErrAttemptFenced
 	ErrJobNeedsRecovery   = errors.New("expired processing job requires recovery")
-	ErrJobCommitUncertain = errors.New("job commit outcome is uncertain")
+	ErrJobCommitUncertain = processor.ErrJobCommitUncertain
 )
 
-// ClaimDisposition describes a durable claim outcome.
-type ClaimDisposition string
+// ClaimDisposition describes a durable admission outcome.
+type ClaimDisposition = processor.ClaimDisposition
 
 // Only ClaimAcquired grants permission to run the returned attempt.
 const (
-	ClaimAcquired     ClaimDisposition = "acquired"
-	ClaimProcessing   ClaimDisposition = "processing"
-	ClaimWaitingRetry ClaimDisposition = "waiting_retry"
-	ClaimTerminal     ClaimDisposition = "terminal"
-	ClaimImageDeleted ClaimDisposition = "image_deleted"
-	ClaimExhausted    ClaimDisposition = "exhausted"
+	ClaimAcquired     = processor.ClaimAcquired
+	ClaimProcessing   = processor.ClaimProcessing
+	ClaimWaitingRetry = processor.ClaimWaitingRetry
+	ClaimTerminal     = processor.ClaimTerminal
+	ClaimImageDeleted = processor.ClaimImageDeleted
+	ClaimExhausted    = processor.ClaimExhausted
 )
 
-// ClaimResult contains attempt data only when Disposition is ClaimAcquired.
-type ClaimResult struct {
-	Disposition ClaimDisposition
-	Job         domain.Job
-	ResultKey   string
-}
-
-// CanAck reports whether the result represents durable handling of a notification.
-// Claim returns a zero result on every error, including uncertain COMMIT.
-func (c ClaimResult) CanAck() bool {
-	switch c.Disposition {
-	case ClaimAcquired, ClaimProcessing, ClaimWaitingRetry, ClaimTerminal, ClaimImageDeleted, ClaimExhausted:
-		return true
-	}
-	return false
-}
+// ClaimResult contains the service's admission data.
+type ClaimResult = processor.ClaimResult
 
 // JobRepositoryOptions controls leases, attempt limits, and durable notifications.
 type JobRepositoryOptions struct {
@@ -77,6 +64,7 @@ func NewJobRepository(pool *pgxpool.Pool, options JobRepositoryOptions) (*JobRep
 type lockedJob struct {
 	job         domain.Job
 	contentType string
+	originalKey string
 	deleted     bool
 }
 
@@ -89,8 +77,8 @@ func lockJob(ctx context.Context, tx pgx.Tx, id string) (lockedJob, error) {
 		return lockedJob{}, fmt.Errorf("find job parent: %w", err)
 	}
 	var deleted pgtype.Timestamptz
-	var contentType string
-	if err := tx.QueryRow(ctx, "SELECT deleted_at,content_type FROM images WHERE id=$1 FOR UPDATE", imageID).Scan(&deleted, &contentType); err != nil {
+	var contentType, originalKey string
+	if err := tx.QueryRow(ctx, "SELECT deleted_at,content_type,original_key FROM images WHERE id=$1 FOR UPDATE", imageID).Scan(&deleted, &contentType, &originalKey); err != nil {
 		return lockedJob{}, fmt.Errorf("lock job image: %w", err)
 	}
 	job, err := scanJob(tx.QueryRow(ctx, "SELECT "+jobColumns+" FROM jobs WHERE id=$1 AND image_id=$2 FOR UPDATE", id, imageID))
@@ -100,7 +88,7 @@ func lockJob(ctx context.Context, tx pgx.Tx, id string) (lockedJob, error) {
 	if err != nil {
 		return lockedJob{}, fmt.Errorf("lock job: %w", err)
 	}
-	return lockedJob{job, contentType, deleted.Valid}, nil
+	return lockedJob{job: job, contentType: contentType, originalKey: originalKey, deleted: deleted.Valid}, nil
 }
 
 func jobClock(ctx context.Context, tx pgx.Tx) (time.Time, error) {
@@ -183,7 +171,7 @@ func (r *JobRepository) Claim(ctx context.Context, id string) (ClaimResult, erro
    VALUES ($1,$2,$3,$4,$5)`, key, job.ImageID, job.ID, job.AttemptToken, job.LeaseUntil); err != nil {
 			return ClaimResult{}, fmt.Errorf("register result intent: %w", err)
 		}
-		result = ClaimResult{Disposition: ClaimAcquired, Job: job, ResultKey: key}
+		result = ClaimResult{Disposition: ClaimAcquired, Job: job, ResultKey: key, OriginalKey: locked.originalKey}
 	}
 	if err := commitJob(ctx, tx); err != nil {
 		return ClaimResult{}, err
@@ -192,14 +180,10 @@ func (r *JobRepository) Claim(ctx context.Context, id string) (ClaimResult, erro
 }
 
 // JobResult contains the stored output metadata of the current attempt.
-type JobResult struct {
-	ObjectKey     string
-	Width, Height int
-	SizeBytes     int64
-}
+type JobResult = processor.JobResult
 
-// JobFailure holds a code and message; callers must exclude secrets from Message.
-type JobFailure struct{ Code, Message string }
+// JobFailure contains a safe code and message suitable for persistence.
+type JobFailure = processor.JobFailure
 
 // Complete accepts an output only from the current live attempt and its intent.
 func (r *JobRepository) Complete(ctx context.Context, id, token string, result JobResult) (domain.Job, error) {

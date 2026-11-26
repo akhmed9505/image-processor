@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/akhmed9505/image-processor/internal/config"
+	"github.com/akhmed9505/image-processor/internal/service/processor"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 )
@@ -98,6 +99,15 @@ func (s *Storage) Get(ctx context.Context, key string) (io.ReadCloser, ObjectInf
 		return nil, ObjectInfo{}, storageError("get object", err)
 	}
 	return body, objectInfo(info), nil
+}
+
+// OpenOriginal opens the processing input, translating absence to the service contract.
+func (s *Storage) OpenOriginal(ctx context.Context, key string) (io.ReadCloser, error) {
+	body, _, err := s.Get(ctx, key)
+	if errors.Is(err, ErrObjectNotFound) {
+		return nil, fmt.Errorf("%w: %w", processor.ErrOriginalNotFound, err)
+	}
+	return body, err
 }
 
 // Stat returns metadata or ErrObjectNotFound.
